@@ -1,0 +1,14 @@
+[project]
+name = "data-analysis"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "h5py>=3.16.0",
+    "jupytext>=1.19.1",
+    "marimo>=0.23.3",
+    "matplotlib>=3.10.9",
+    "mne>=1.12.1",
+    "polars>=1.40.1",
+]
