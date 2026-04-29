@@ -190,24 +190,23 @@ def _(mne, mo, robot_events, robot_hb, task_ids):
 
 @app.cell
 def _(norobot_epochs, plt, robot_epochs):
-    fig, axes = plt.subplots(ncols=2, figsize=(14, 5), layout="constrained")
-    axes[0].set_title("Robot vs NoRobot — HbO")
-    axes[1].set_title("Robot vs NoRobot — HbR")
+    fig, axes = plt.subplots(ncols=2, figsize=(14, 5), layout="constrained", sharey=True)
+    axes[0].set_title("Robot — HbO & HbR")
+    axes[1].set_title("NoRobot — HbO & HbR")
 
-    colors = {"Robot": "#AA3377", "NoRobot": "#4477AA"}
-    for ax, chrom in zip(axes, ["hbo", "hbr"]):
-        for _label, _epochs in [
-            ("Robot", robot_epochs),
-            ("NoRobot", norobot_epochs),
-        ]:
+    colors = {"hbo": "#AA3377", "hbr": "#4477AA"}
+    for ax, _label, _epochs in zip(
+        axes, ["Robot", "NoRobot"], [robot_epochs, norobot_epochs]
+    ):
+        for chrom in ["hbo", "hbr"]:
             ev = _epochs.average(picks=chrom)
             ax.plot(
                 ev.times,
                 ev.data.mean(axis=0) * 1e6,
-                label=_label,
-                color=colors[_label],
+                label=chrom.upper(),
+                color=colors[chrom],
             )
-        ax.set(xlabel="Time (s)", ylabel=f"{chrom.upper()} (μM)")
+        ax.set(xlabel="Time (s)", ylabel="Concentration (μM)")
         ax.legend()
         ax.axvline(0, color="k", linestyle="--", linewidth=0.8)
     plt.show()
