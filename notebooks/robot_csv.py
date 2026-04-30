@@ -225,7 +225,7 @@ def process_robot_file(
 
             chunk = run_rows.slice(start_idx, max(0, end_idx - start_idx)).with_columns(
                 [
-                    pl.lit(f"task_{seq['task_index'] + 1}").alias("task_id"),
+                    pl.lit(f"task_{seq['marker']}").alias("task_id"),
                     pl.lit(seq["task_index"] + 1).alias("task_instance"),
                     pl.lit(run_id).alias("run_id"),
                     pl.lit(is_robot).alias("is_robot"),

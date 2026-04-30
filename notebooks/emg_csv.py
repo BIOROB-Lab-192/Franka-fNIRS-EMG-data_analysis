@@ -9,11 +9,29 @@ def _():
     import csv
     from pathlib import Path
     import polars as pl
+    import sys
+    sys.path.insert(0, "/Users/haider/code/data_analysis")
+    from src.loaders.loader import load_data
+    import marimo as mo
 
-    return Path, csv, pl
+    return Path, csv, load_data, mo, pl
 
 
 @app.cell
+def _(load_data, mo):
+    DATA_DIR = "data"
+    RAW_DIR = f"{DATA_DIR}/raw"
+    PROCESSED_DIR = f"{DATA_DIR}/processed"
+    FIGURES_DIR = "../figures"
+
+    data_files = load_data(RAW_DIR)
+    print(data_files)
+
+    mo.md(f"**Found {len(data_files)} participants:** `{list(data_files.keys())}`")
+    return
+
+
+@app.cell(hide_code=True)
 def _(Path, csv, pl):
     def load_trigno_csv(filepath):
         filepath = Path(filepath)
