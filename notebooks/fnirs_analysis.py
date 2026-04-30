@@ -14,6 +14,8 @@ def _():
     import os
     from itertools import compress
     import re
+    from collections import defaultdict
+    import pandas as pd
 
     DATA_DIR = "data"
     RAW_DIR = f"{DATA_DIR}/raw"
@@ -44,39 +46,43 @@ def _(RAW_DIR, mo):
 
 @app.cell
 def _(data_files, mne):
-    session_stats = {}
-    for key, paths in data_files.items():
-        raw = mne.io.read_raw_snirf(paths["fNIRS"], preload=True, verbose=False)
-        raw.load_data().resample(10.0)
-        raw_fnirs = raw.copy().pick("fnirs")
-        raw_od = mne.preprocessing.nirs.optical_density(raw_fnirs)
-        raw_hb = mne.preprocessing.nirs.beer_lambert_law(raw_od, ppf=6.0)
-        events, _ = mne.events_from_annotations(raw_hb, verbose=False)
-        _task_ids = {
-            'task_1': 1, 'task_2': 2, 'task_3': 3, 'task_4': 4, 'task_5': 5,
-            'task_6': 6, 'task_7': 7, 'task_8': 8, 'task_9': 9, 'task_10': 10,
-        }
-        epochs = mne.Epochs(raw_hb, events, _task_ids, tmin=-5, tmax=15,
-                             baseline=(None, 0), preload=True)
-        epochs.drop_bad()
-        n_total = len(events)
-        n_kept = len(epochs)
-        n_dropped = n_total - n_kept
-        condition = "robot" if "_robot" in key and "norobot" not in key else "norobot"
-        session_stats[key] = dict(condition=condition, total=n_total,
-                                   kept=n_kept, dropped=n_dropped)
+    def _():
+        session_stats = {}
+        for key, paths in data_files.items():
+            raw = mne.io.read_raw_snirf(paths["fNIRS"], preload=True, verbose=False)
+            raw.load_data().resample(10.0)
+            raw_fnirs = raw.copy().pick("fnirs")
+            raw_od = mne.preprocessing.nirs.optical_density(raw_fnirs)
+            raw_hb = mne.preprocessing.nirs.beer_lambert_law(raw_od, ppf=6.0)
+            events, _ = mne.events_from_annotations(raw_hb, verbose=False)
+            _task_ids = {
+                'task_1': 1, 'task_2': 2, 'task_3': 3, 'task_4': 4, 'task_5': 5,
+                'task_6': 6, 'task_7': 7, 'task_8': 8, 'task_9': 9, 'task_10': 10,
+            }
+            epochs = mne.Epochs(raw_hb, events, _task_ids, tmin=-5, tmax=15,
+                                 baseline=(None, 0), preload=True)
+            epochs.drop_bad()
+            n_total = len(events)
+            n_kept = len(epochs)
+            n_dropped = n_total - n_kept
+            condition = "robot" if "_robot" in key and "norobot" not in key else "norobot"
+            session_stats[key] = dict(condition=condition, total=n_total,
+                                       kept=n_kept, dropped=n_dropped)
 
-    print(f"{'Session':<22} {'Condition':<10} {'Total':>7} {'Kept':>7} {'Dropped':>8}")
-    print("-" * 58)
-    for k, v in sorted(session_stats.items()):
-        print(f"{k:<22} {v['condition']:<10} {v['total']:>7} {v['kept']:>7} {v['dropped']:>8}")
-    print("-" * 58)
-    robot_total = sum(v["total"] for v in session_stats.values() if v["condition"] == "robot")
-    norobot_total = sum(v["total"] for v in session_stats.values() if v["condition"] == "norobot")
-    robot_kept = sum(v["kept"] for v in session_stats.values() if v["condition"] == "robot")
-    norobot_kept = sum(v["kept"] for v in session_stats.values() if v["condition"] == "norobot")
-    print(f"{'ROBOT TOTAL':<22} {'':<10} {robot_total:>7} {robot_kept:>7} {robot_total-robot_kept:>8}")
-    print(f"{'NOROBOT TOTAL':<22} {'':<10} {norobot_total:>7} {norobot_kept:>7} {norobot_total-norobot_kept:>8}")
+        print(f"{'Session':<22} {'Condition':<10} {'Total':>7} {'Kept':>7} {'Dropped':>8}")
+        print("-" * 58)
+        for k, v in sorted(session_stats.items()):
+            print(f"{k:<22} {v['condition']:<10} {v['total']:>7} {v['kept']:>7} {v['dropped']:>8}")
+        print("-" * 58)
+        robot_total = sum(v["total"] for v in session_stats.values() if v["condition"] == "robot")
+        norobot_total = sum(v["total"] for v in session_stats.values() if v["condition"] == "norobot")
+        robot_kept = sum(v["kept"] for v in session_stats.values() if v["condition"] == "robot")
+        norobot_kept = sum(v["kept"] for v in session_stats.values() if v["condition"] == "norobot")
+        print(f"{'ROBOT TOTAL':<22} {'':<10} {robot_total:>7} {robot_kept:>7} {robot_total-robot_kept:>8}")
+        return print(f"{'NOROBOT TOTAL':<22} {'':<10} {norobot_total:>7} {norobot_kept:>7} {norobot_total-norobot_kept:>8}")
+
+
+    _()
     return
 
 
@@ -267,75 +273,171 @@ def _(norobot_epochs, np, plt, robot_epochs):
 
 
 @app.cell
-def _(PROCESSED_DIR, mo, norobot_epochs, os, pl, robot_epochs, task_ids):
-    def epochs_to_wide(epochs, condition, task_id_map):
-        """
-        Build a wide Polars DataFrame from an MNE Epochs object.
-        One row per epoch; columns = condition, task, is_bad, then
-        {HbO/HbR}_{ch_name}_t{0..n_times-1} for all channels.
-        Includes ALL epochs — kept and bad — so no data is silently dropped.
-        """
-        ch_names = epochs.ch_names
-        n_epochs, n_channels, n_times = epochs.get_data().shape
+def _(PROCESSED_DIR, data_files, mne, os, pl, preprocess, task_ids):
+    # --- Export epochs to wide CSV with sync metadata ---
+    # Paste this into a single marimo cell after you already have:
+    #   data_files, preprocess, task_ids, PROCESSED_DIR, mne, os, pl, re
 
-        # Reverse task_id map: event_id → "task_N"
+    def parse_dataset_key(dataset_key):
+        is_robot = "_robot_" in dataset_key and "_norobot_" not in dataset_key
+
+        if "_norobot_" in dataset_key:
+            participant, run_str = dataset_key.rsplit("_norobot_", 1)
+        elif "_robot_" in dataset_key:
+            participant, run_str = dataset_key.rsplit("_robot_", 1)
+        else:
+            participant = dataset_key
+            run_str = None
+
+        try:
+            run_id = int(run_str) if run_str is not None else None
+        except ValueError:
+            run_id = run_str
+
+        return participant, run_id, is_robot
+
+
+    def build_event_metadata(events, dataset_key, task_id_map):
+        participant, run_id, is_robot = parse_dataset_key(dataset_key)
         id_to_task = {v: k for k, v in task_id_map.items()}
 
-        # Drop log: True = dropped, False = kept
-        drop_log = epochs.drop_log
+        rows = []
+        for i, event in enumerate(events):
+            event_sample = int(event[0])
+            event_code = int(event[2])
+            task = id_to_task.get(event_code, f"unknown_{event_code}")
+
+            rows.append(
+                {
+                    "dataset_key": dataset_key,
+                    "participant": participant,
+                    "run_id": run_id,
+                    "is_robot": is_robot,
+                    "task": task,
+                    "task_instance": i + 1,
+                    "epoch_index_in_dataset": i,
+                    "event_sample": event_sample,
+                    "event_code": event_code,
+                }
+            )
+        return pl.DataFrame(rows)
+
+
+    def make_epochs_for_dataset(dataset_key, fnirs_path, preprocess, task_ids):
+        raw = mne.io.read_raw_snirf(fnirs_path, preload=True, verbose=False)
+        raw.resample(10.0)
+
+        _, _, raw_hb, _ = preprocess(raw, label=dataset_key)
+
+        events, _ = mne.events_from_annotations(raw_hb, verbose=False)
+        metadata = build_event_metadata(events, dataset_key, task_ids).to_pandas()
+
+        epochs = mne.Epochs(
+            raw_hb,
+            events,
+            event_id=task_ids,
+            tmin=-5,
+            tmax=15,
+            baseline=(None, 0),
+            reject=dict(hbo=100e-6, hbr=100e-6),
+            preload=True,
+            metadata=metadata,
+            verbose=False,
+        )
+
+        n_before = len(epochs)
+        epochs.drop_bad()
+        n_after = len(epochs)
+        print(f"{dataset_key}: kept {n_after} / {n_before} epochs")
+
+        return epochs
+
+
+    def epochs_to_wide(epochs):
+        data = epochs.get_data()
+        ch_names = epochs.ch_names
+        n_epochs, n_channels, n_times = data.shape
+
+        meta_df = pl.from_pandas(epochs.metadata.reset_index(drop=True))
 
         rows = []
         for i in range(n_epochs):
-            event_id = epochs.events[i, 2]
-            task = id_to_task.get(event_id, f"unknown_{event_id}")
-            is_bad = drop_log[i] is not None and len(drop_log[i]) > 0
+            row = meta_df.row(i, named=True)
+            epoch_data = data[i]
 
-            # (n_channels, n_times) — baseline-corrected values
-            epoch_data = epochs.get_data()[i]
-
-            row = dict(
-                condition=condition,
-                task=task,
-                is_bad=is_bad,
-            )
             for ch_idx, ch in enumerate(ch_names):
-                # prepend channel type for disambiguation
-                if ch.startswith("HbO"):
+                ch_lower = ch.lower()
+                if "hbo" in ch_lower:
                     prefix = "HbO"
-                elif ch.startswith("HbR"):
+                elif "hbr" in ch_lower:
                     prefix = "HbR"
                 else:
                     prefix = "AUX"
+
+                safe_ch = ch.replace(" ", "_")
                 for t in range(n_times):
-                    row[f"{prefix}_{ch}_t{t}"] = epoch_data[ch_idx, t]
+                    row[f"{prefix}_{safe_ch}_t{t}"] = epoch_data[ch_idx, t]
+
             rows.append(row)
 
         return pl.DataFrame(rows)
 
-    # Build wide tables for both conditions
-    norobot_df = epochs_to_wide(norobot_epochs, "norobot", task_ids)
-    robot_df = epochs_to_wide(robot_epochs, "robot", task_ids)
 
-    # Combine
-    wide_df = pl.concat([norobot_df, robot_df])
+    wide_dfs = []
+    dataset_summary = []
 
-    _n_total = len(wide_df)
-    n_bad = wide_df.filter(pl.col("is_bad") == True).height
-    n_good = _n_total - n_bad
-    n_cols = wide_df.width
+    for dataset_key, paths in sorted(data_files.items()):
+        epochs = make_epochs_for_dataset(
+            dataset_key=dataset_key,
+            fnirs_path=paths["fNIRS"],
+            preprocess=preprocess,
+            task_ids=task_ids,
+        )
 
-    # Export to CSV
-    EXPORT_DIR = PROCESSED_DIR
-    os.makedirs(EXPORT_DIR, exist_ok=True)
-    export_path = f"{EXPORT_DIR}/epochs_wide.csv"
+        wide_df_dataset = epochs_to_wide(epochs)
+        wide_dfs.append(wide_df_dataset)
+
+        md = epochs.metadata
+        dataset_summary.append(
+            {
+                "dataset_key": dataset_key,
+                "participant": md["participant"].iloc[0] if len(md) else None,
+                "run_id": md["run_id"].iloc[0] if len(md) else None,
+                "is_robot": md["is_robot"].iloc[0] if len(md) else None,
+                "kept_epochs": len(epochs),
+            }
+        )
+
+    wide_df = pl.concat(wide_dfs, how="diagonal")
+
+    os.makedirs(PROCESSED_DIR, exist_ok=True)
+    export_path = f"{PROCESSED_DIR}/epochs_wide_with_metadata.csv"
     wide_df.write_csv(export_path)
 
-    mo.md(f"""
-    **Export done** — `{export_path}`
-    - Total epochs: `{_n_total}` (`{n_bad}` bad / `{n_good}` good)
-    - Columns: `{n_cols}` (condition, task, is_bad + `{n_cols - 3}` channel×time features)
-    - Tasks: `{sorted(task_ids.keys())}`
-    """)
+    meta_cols = [
+        "dataset_key",
+        "participant",
+        "run_id",
+        "is_robot",
+        "task",
+        "task_instance",
+        "epoch_index_in_dataset",
+        "event_sample",
+        "event_code",
+    ]
+
+    print(f"Exported: {export_path}")
+    print(f"Rows: {wide_df.height}")
+    print(f"Columns: {wide_df.width}")
+    print("Metadata columns:", meta_cols)
+    print(pl.DataFrame(dataset_summary))
+    print(wide_df.select(meta_cols).head(10))
+    return (wide_df,)
+
+
+@app.cell
+def _(wide_df):
+    wide_df
     return
 
 
