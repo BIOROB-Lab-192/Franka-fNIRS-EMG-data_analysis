@@ -15,7 +15,7 @@ def _():
     import marimo as mo
     import matplotlib.pyplot as plt
 
-    return Path, csv, load_data, mo, pl, plt
+    return Path, csv, load_data, mo, pl
 
 
 @app.cell
@@ -158,7 +158,7 @@ def _(Path, csv, pl):
 @app.cell
 def _(load_trigno_csv):
     main_df, marker_df = load_trigno_csv("./data/raw/jiang_norobot1/Trial_6.csv")
-    return main_df, marker_df
+    return (main_df,)
 
 
 @app.cell
@@ -167,69 +167,90 @@ def _(main_df):
     return
 
 
-@app.cell
-def _(main_df, marker_df, plt):
-    plot_window = 60
-    emg_col = [c for c in main_df.columns if c.endswith("EMG 1 (mV)")][0]
-    gyro_col = [c for c in main_df.columns if c.endswith("ACC Y (G)")][0]
-    time_col = [c for c in main_df.columns if c.endswith("EMG 1 Time Series (s)")][0]
+@app.cell(hide_code=True)
+def _(main_df):
+    # Map each value channel to its corresponding timestamp channel
+    value_cols = [c for c in main_df.columns if "Time Series" not in c]
+    ts_cols = [c for c in main_df.columns if "Time Series" in c]
 
-    # ── Filter to first 2 minutes with Polars ───────────
-    t_all = main_df[time_col]
-    mask = t_all <= plot_window
+    channel_pairs = []
+    for vc in value_cols:
+        prefix = vc.rsplit(" | ", 1)[0]
+        channel_name = vc.split(" | ", 1)[1]
+        ts_match = f"{prefix} | {channel_name.rsplit(' (', 1)[0]} Time Series (s)"
+        if ts_match in ts_cols:
+            channel_pairs.append((ts_match, vc))
+        else:
+            for tc in ts_cols:
+                if prefix in tc and channel_name.split(" (")[0] in tc:
+                    channel_pairs.append((tc, vc))
+                    break
+    return (channel_pairs,)
 
-    t = t_all.filter(mask).to_numpy()
-    emg = main_df[emg_col].filter(mask).to_numpy()
-    gyro = main_df[gyro_col].filter(mask).to_numpy()
 
-    # ── Marker times ────────────────────────────────────
-    marker_times = marker_df["Time (s)"].to_numpy()
-    marker_labels = (
-        marker_df["Label"].to_list()
-        if "Label" in marker_df.columns
-        else [f"M{i}" for i in range(len(marker_times))]
+@app.cell(hide_code=True)
+def _(main_df):
+    # Step 1: Build the reference timebase from Duo 3 EMG 1 timestamps
+    ref_ts_col = "Duo Sensor 3 (78042) | EMG 1 Time Series (s)"
+    ref_df = (
+        main_df.select(ref_ts_col)
+        .drop_nulls()
+        .rename({ref_ts_col: "time"})
+        .sort("time")
+        .unique(subset=["time"])
     )
 
-    # ── Plot ────────────────────────────────────────────
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 6), sharex=True)
+    print(f"Reference timebase: {len(ref_df)} unique timestamps")
+    print(f"Range: {ref_df['time'].min():.3f}s to {ref_df['time'].max():.3f}s")
+    print(
+        f"Effective rate: {len(ref_df) / (ref_df['time'].max() - ref_df['time'].min()):.1f} Hz"
+    )
+    return ref_df, ref_ts_col
 
-    ax1.plot(t, emg, linewidth=0.4, color="steelblue")
-    ax1.set_ylabel("EMG 1 (mV)")
-    ax1.set_title("EMG — First 2 minutes")
 
-    ax2.plot(t, gyro, linewidth=0.4, color="darkorange")
-    ax2.set_ylabel("GYRO X (deg/s)")
-    ax2.set_title("Gyro X — First 2 minutes")
+@app.cell(hide_code=True)
+def _(channel_pairs, main_df, pl, ref_df, ref_ts_col):
+    # Step 2: Sync all channels onto the reference timebase using join_asof
 
-    # Overlay markers
-    for ax in (ax1, ax2):
-        for mt, ml in zip(marker_times, marker_labels):
-            mt = float(mt)
-            if mt <= plot_window:
-                ax.axvline(mt, color="red", linestyle="--", alpha=0.7, linewidth=1)
-                ax.annotate(
-                    ml,
-                    xy=(mt, ax.get_ylim()[1]),
-                    fontsize=7, color="red",
-                    ha="center", va="bottom", rotation=45,
-                )
+    synced_dfs = [ref_df]  # start with the reference timestamps
 
-    ax2.set_xlabel("Time (s)")
-    ax2.set_xlim(0, plot_window)
-    plt.tight_layout()
-    plt.show()
+    for ch_ts, ch_val in channel_pairs:
+        # Skip the reference channel (Duo 3 EMG 1) — already in ref_df
+        if ch_ts == ref_ts_col:
+            synced_dfs.append(main_df.select(ch_val))
+            continue
 
-    # ── Print markers in window ─────────────────────────
-    print("Markers in first 2 min:")
-    for mt, ml in zip(marker_times, marker_labels):
-        mt = float(mt)
-        if mt <= plot_window:
-            print(f"  {ml}: {mt:.3f}s")
-    return
+        # Extract non-null (timestamp, value) pairs for this channel
+        ch_data = (
+            main_df.select(ch_ts, ch_val)
+            .drop_nulls()
+            .rename({ch_ts: "time", ch_val: "value"})
+            .sort("time")
+        )
+
+        # join_asof: for each reference timestamp, find the nearest channel sample
+        aligned = (
+            ref_df.join_asof(
+                ch_data,
+                on="time",
+                strategy="nearest",
+            )
+            .select("value")
+            .rename({"value": ch_val})
+        )
+
+        synced_dfs.append(aligned)
+
+    # Combine all aligned columns
+    synced_df = pl.concat(synced_dfs, how="horizontal")
+    print(f"Synced shape: {synced_df.shape}")
+    print(synced_df.head(3))
+    return (synced_df,)
 
 
 @app.cell
-def _():
+def _(synced_df):
+    synced_df
     return
 
 
