@@ -157,9 +157,8 @@ def _(Path, csv, pl):
 
 @app.cell
 def _(load_trigno_csv):
-    main_df, marker_df = load_trigno_csv("./data/raw/caroline_norobot1/Trial_16.csv")
-    plot_window = 120
-    return main_df, marker_df, plot_window
+    main_df, marker_df = load_trigno_csv("./data/raw/jiang_norobot1/Trial_6.csv")
+    return main_df, marker_df
 
 
 @app.cell
@@ -169,9 +168,10 @@ def _(main_df):
 
 
 @app.cell
-def _(main_df, marker_df, plot_window, plt):
+def _(main_df, marker_df, plt):
+    plot_window = 60
     emg_col = [c for c in main_df.columns if c.endswith("EMG 1 (mV)")][0]
-    gyro_col = [c for c in main_df.columns if c.endswith("GYRO X (deg/s)")][0]
+    gyro_col = [c for c in main_df.columns if c.endswith("ACC Y (G)")][0]
     time_col = [c for c in main_df.columns if c.endswith("EMG 1 Time Series (s)")][0]
 
     # ── Filter to first 2 minutes with Polars ───────────
@@ -225,6 +225,11 @@ def _(main_df, marker_df, plot_window, plt):
         mt = float(mt)
         if mt <= plot_window:
             print(f"  {ml}: {mt:.3f}s")
+    return
+
+
+@app.cell
+def _():
     return
 
 
