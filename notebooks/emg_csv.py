@@ -163,94 +163,181 @@ def _(load_trigno_csv):
 
 @app.cell
 def _(main_df):
-    main_df.schema
+    main_df
     return
 
 
 @app.cell(hide_code=True)
-def _(main_df):
-    # Map each value channel to its corresponding timestamp channel
-    value_cols = [c for c in main_df.columns if "Time Series" not in c]
-    ts_cols = [c for c in main_df.columns if "Time Series" in c]
+def _(pl):
+    def sync_sensor_streams(df, ref_col=None, strategy="nearest"):
+        """
+        Sync all sensor channels onto a common timebase.
 
-    channel_pairs = []
-    for vc in value_cols:
-        prefix = vc.rsplit(" | ", 1)[0]
-        channel_name = vc.split(" | ", 1)[1]
-        ts_match = f"{prefix} | {channel_name.rsplit(' (', 1)[0]} Time Series (s)"
-        if ts_match in ts_cols:
-            channel_pairs.append((ts_match, vc))
-        else:
-            for tc in ts_cols:
-                if prefix in tc and channel_name.split(" (")[0] in tc:
-                    channel_pairs.append((tc, vc))
-                    break
-    return (channel_pairs,)
+        Each sensor channel has a paired timestamp column (ending in "Time Series (s)")
+        and a value column. This function aligns all value columns onto the timestamps
+        of a reference channel using join_asof.
 
+        Args:
+            df: Polars DataFrame with interleaved multi-sensor data.
+            ref_col: Reference timestamp column name. If None, auto-selects the
+                     sensor with the highest sampling rate (most non-null timestamps).
+            strategy: join_asof strategy — "nearest" (default), "forward", or "backward".
 
-@app.cell(hide_code=True)
-def _(main_df):
-    # Step 1: Build the reference timebase from Duo 3 EMG 1 timestamps
-    ref_ts_col = "Duo Sensor 3 (78042) | EMG 1 Time Series (s)"
-    ref_df = (
-        main_df.select(ref_ts_col)
-        .drop_nulls()
-        .rename({ref_ts_col: "time"})
-        .sort("time")
-        .unique(subset=["time"])
-    )
+        Returns:
+            Polars DataFrame with shape (n_ref_timestamps, n_value_channels + 1).
+            First column is "time" (the reference timestamps).
+            Value columns are aligned to that timebase via nearest-neighbor matching.
+        """
+        # --- Discover channel pairs ---
+        ts_cols = [c for c in df.columns if "Time Series" in c]
+        val_cols = [c for c in df.columns if "Time Series" not in c]
 
-    print(f"Reference timebase: {len(ref_df)} unique timestamps")
-    print(f"Range: {ref_df['time'].min():.3f}s to {ref_df['time'].max():.3f}s")
-    print(
-        f"Effective rate: {len(ref_df) / (ref_df['time'].max() - ref_df['time'].min()):.1f} Hz"
-    )
-    return ref_df, ref_ts_col
-
-
-@app.cell(hide_code=True)
-def _(channel_pairs, main_df, pl, ref_df, ref_ts_col):
-    # Step 2: Sync all channels onto the reference timebase using join_asof
-
-    synced_dfs = [ref_df]  # start with the reference timestamps
-
-    for ch_ts, ch_val in channel_pairs:
-        # Skip the reference channel (Duo 3 EMG 1) — already in ref_df
-        if ch_ts == ref_ts_col:
-            synced_dfs.append(main_df.select(ch_val))
-            continue
-
-        # Extract non-null (timestamp, value) pairs for this channel
-        ch_data = (
-            main_df.select(ch_ts, ch_val)
-            .drop_nulls()
-            .rename({ch_ts: "time", ch_val: "value"})
-            .sort("time")
-        )
-
-        # join_asof: for each reference timestamp, find the nearest channel sample
-        aligned = (
-            ref_df.join_asof(
-                ch_data,
-                on="time",
-                strategy="nearest",
+        pairs = []
+        for vc in val_cols:
+            prefix = vc.rsplit(" | ", 1)[0]
+            channel_name = vc.split(" | ", 1)[1]
+            ts_match = (
+                f"{prefix} | {channel_name.rsplit(' (', 1)[0]} Time Series (s)"
             )
-            .select("value")
-            .rename({"value": ch_val})
+            if ts_match in ts_cols:
+                pairs.append((ts_match, vc))
+            else:
+                for tc in ts_cols:
+                    if prefix in tc and channel_name.split(" (")[0] in tc:
+                        pairs.append((tc, vc))
+                        break
+
+        if not pairs:
+            raise ValueError("No timestamp/value channel pairs found.")
+
+        # --- Select reference timebase ---
+        if ref_col is None:
+            # Pick the timestamp column with the most non-null values (fastest sensor)
+            ref_col = max(
+                ts_cols, key=lambda c: df.select(pl.col(c).drop_nulls()).height
+            )
+            print(f"Auto-selected reference: {ref_col}")
+
+        # Build reference timebase: unique, sorted, non-null timestamps
+        ref_df = (
+            df.select(ref_col)
+            .drop_nulls()
+            .rename({ref_col: "time"})
+            .sort("time")
+            .unique(subset=["time"])
         )
+        n_ref = len(ref_df)
+        print(f"Reference timebase: {n_ref} timestamps")
 
-        synced_dfs.append(aligned)
+        # --- Align each channel ---
+        synced_dfs = [ref_df]
 
-    # Combine all aligned columns
-    synced_df = pl.concat(synced_dfs, how="horizontal")
-    print(f"Synced shape: {synced_df.shape}")
-    print(synced_df.head(3))
+        for ch_ts, ch_val in pairs:
+            if ch_ts == ref_col:
+                # Reference channel — just take the values as-is
+                synced_dfs.append(df.select(ch_val))
+                continue
+
+            # Extract non-null (time, value) pairs, sort by time
+            ch_data = (
+                df.select(ch_ts, ch_val)
+                .drop_nulls()
+                .rename({ch_ts: "time", ch_val: "value"})
+                .sort("time")
+            )
+
+            # Align to reference timebase
+            aligned = (
+                ref_df.join_asof(
+                    ch_data,
+                    on="time",
+                    strategy=strategy,
+                )
+                .select("value")
+                .rename({"value": ch_val})
+            )
+
+            synced_dfs.append(aligned)
+
+        return pl.concat(synced_dfs, how="horizontal")
+
+    return (sync_sensor_streams,)
+
+
+@app.cell
+def _(main_df, pl, sync_sensor_streams):
+    # Sync all sensor streams onto the fastest timebase (Duo 3 EMG 1 @ 1926 Hz)
+    synced_df = sync_sensor_streams(main_df)
+
+    print(f"Synced: {synced_df.shape[0]} rows × {synced_df.shape[1]} columns")
+    print(
+        f"Time range: {synced_df['time'].min():.3f}s → {synced_df['time'].max():.3f}s"
+    )
+    print(f"Duration: {synced_df['time'].max() - synced_df['time'].min():.2f}s")
+    print(
+        f"Nulls: {sum(synced_df.select(pl.col(c).null_count()).item() for c in synced_df.columns)}"
+    )
     return (synced_df,)
 
 
 @app.cell
 def _(synced_df):
     synced_df
+    return
+
+
+@app.cell(hide_code=True)
+def _(pl, synced_df):
+    # Count zeros (0, 0.0, or "0") per column in synced_df
+    print(f"{'Column':<60} {'Zeros':>8}")
+    print("-" * 70)
+    total_with_zeros = 0
+    for c in synced_df.columns:
+        s = synced_df.select(pl.col(c)).to_series()
+        numeric_zeros = (s == 0).sum()
+        str_zeros = (s.cast(pl.Utf8).str.strip_chars() == "0").sum()
+        zeros = numeric_zeros + str_zeros
+        if zeros > 0:
+            print(f"{c:<60} {zeros:>8}")
+            total_with_zeros += 1
+    print("-" * 70)
+    print(f"Total columns with zeros: {total_with_zeros}")
+    return
+
+
+@app.cell(hide_code=True)
+def _(pl, synced_df):
+    # Slice 10 rows before and after the first zero in any value column
+    _val_cols = [c for c in synced_df.columns if c != "time"]
+
+    _nz_series = synced_df.select(
+        pl.sum_horizontal(
+            [(pl.col(c) == 0).cast(pl.Int32) for c in _val_cols]
+        ).alias("n_zeros")
+    ).to_series()
+
+    _first = (_nz_series > 0).arg_true()[0]
+    _start = max(0, _first - 10)
+    _end = min(len(synced_df), _first + 11)
+
+    # Build a clean slice with a row index and zero count
+    synced_df[_start:_end].with_columns(
+        pl.lit(list(range(_start, _end))).alias("row"),
+        _nz_series[_start:_end].alias("n_zeros"),
+    ).select("row", "time", "n_zeros", pl.all().exclude("row", "time", "n_zeros"))
+    return
+
+
+@app.cell
+def _(synced_df):
+
+
+    import plotly.express as px
+
+    quick_plot = lambda s: px.line(y=s.to_list(), title=s.name).show()
+
+    s_ = synced_df["Avanti Sensor 1 (82703) | EMG 1 (mV)"]
+    quick_plot(s_[::10])
     return
 
 
