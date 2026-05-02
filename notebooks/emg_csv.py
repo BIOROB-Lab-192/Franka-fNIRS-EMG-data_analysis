@@ -431,7 +431,7 @@ def _(cleaned, marker_df, plt):
 
 
 @app.cell
-def _(cleaned, marker_df, pl):
+def _(pl):
 
     def generate_epochs(cleaned, marker_df, epoch_duration=40.0, total_markers=30):
         """
@@ -459,10 +459,8 @@ def _(cleaned, marker_df, pl):
             "epoch_id": list(range(1, len(onsets) + 1)),
             "epoch_start": onsets,
         })
-    epochs_df = generate_epochs(cleaned, marker_df)
-    epochs_df
 
-    return (epochs_df,)
+    return
 
 
 @app.cell(hide_code=True)
@@ -501,7 +499,7 @@ def _(epochs_df, pl):
 
 
 @app.cell(hide_code=True)
-def _(cleaned, metadata_df, pl):
+def _(cleaned, metadata_df):
 
     def merge_metadata(cleaned, metadata_df):
         """
@@ -512,31 +510,17 @@ def _(cleaned, metadata_df, pl):
             metadata_df: output from add_metadata()
     
         Returns:
-            Cleaned data with task_instance, run_id, is_robot, participant columns added.
-            Rows outside any epoch window are dropped.
+            Cleaned data with epoch_start, task_instance, run_id, is_robot, participant columns added.
+            Rows before the first epoch are dropped.
         """
-        # Add epoch boundaries for filtering
-        bounds = metadata_df.with_columns([
-            pl.col("epoch_start").shift(-1).alias("epoch_end"),
-        ])
-        # Last epoch extends to end of data
-        last_end = cleaned["time"][-1]
-        bounds = bounds.with_columns(
-            pl.when(pl.col("epoch_end").is_null())
-            .then(pl.lit(last_end))
-            .otherwise(pl.col("epoch_end"))
-            .alias("epoch_end")
-        )
-    
-        # Assign each row to an epoch using join_asof
-        # Join cleaned with epoch starts to find which epoch each row belongs to
         result = cleaned.join_asof(
-            metadata_df.rename({"epoch_start": "time"}).sort("time"),
-            on="time",
-            strategy="forward",
+            metadata_df.sort("epoch_start"),
+            left_on="time",
+            right_on="epoch_start",
+            strategy="backward",
         )
     
-        # Drop rows that didn't match (before first epoch)
+        # Drop rows before first epoch (no match)
         result = result.drop_nulls(subset=["task_instance"])
     
         return result
@@ -545,6 +529,41 @@ def _(cleaned, metadata_df, pl):
     print(f"Rows: {merged_df.shape[0]:,}  Columns: {merged_df.shape[1]}")
     print(f"Epochs: {merged_df['task_instance'].n_unique()}")
     merged_df
+
+    return (merged_df,)
+
+
+@app.cell(hide_code=True)
+def _(merged_df, pl):
+
+    def filter_epoch_window(merged_df, window_duration=15.0):
+        """
+        Filter to only rows within window_duration seconds after each epoch marker,
+        and drop any calibrated columns.
+    
+        Args:
+            merged_df: output from merge_metadata()
+            window_duration: seconds after epoch_start to keep (default: 15)
+    
+        Returns:
+            Filtered DataFrame
+        """
+        result = merged_df.filter(
+            (pl.col("time") >= pl.col("epoch_start")) & 
+            (pl.col("time") < pl.col("epoch_start") + window_duration)
+        )
+    
+        # Drop calibrated columns
+        cal_cols = [c for c in result.columns if "calibrated" in c.lower()]
+        if cal_cols:
+            result = result.drop(cal_cols)
+            print(f"Dropped {len(cal_cols)} calibrated column(s): {cal_cols}")
+    
+        return result
+
+    windowed_df = filter_epoch_window(merged_df)
+    print(f"Rows: {windowed_df.shape[0]:,}  Columns: {windowed_df.shape[1]}")
+    windowed_df
 
     return
 
