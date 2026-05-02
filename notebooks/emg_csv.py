@@ -15,7 +15,7 @@ def _():
     import marimo as mo
     import matplotlib.pyplot as plt
 
-    return Path, csv, load_data, mo, pl
+    return Path, csv, load_data, mo, pl, plt
 
 
 @app.cell
@@ -157,8 +157,8 @@ def _(Path, csv, pl):
 
 @app.cell
 def _(load_trigno_csv):
-    main_df, marker_df = load_trigno_csv("./data/raw/jiang_norobot1/Trial_6.csv")
-    return (main_df,)
+    main_df, marker_df = load_trigno_csv("./data/raw/ronald_robot4/Trial_3.csv")
+    return main_df, marker_df
 
 
 @app.cell(hide_code=True)
@@ -374,6 +374,60 @@ def _(handle_dropouts, pl, synced_df):
     print(f"EMG: {_emg_zeros} zeros -> {_emg_nulls} nulls")
     print(f"IMU: {_imu_zeros} zeros -> {_imu_nulls} nulls (interpolated)")
     return (cleaned,)
+
+
+@app.cell
+def _(cleaned, marker_df, plt):
+
+    # Sensor 1 marker verification — 15s before and after first marker
+    which_marker = 0
+    first_marker_time = float(marker_df["Time (s)"].to_list()[0])+ (40 * which_marker)
+    t_min = first_marker_time - 1
+    t_max = first_marker_time + 5
+
+    time_data = cleaned["time"]
+    mask = (time_data >= t_min) & (time_data <= t_max)
+    plot_df = cleaned.filter(mask)
+    plot_time = time_data.filter(mask).to_list()
+
+    # Sensor 1 channels
+    sensor1 = "Avanti Sensor 1 (82703)"
+    emg_col = f"{sensor1} | EMG 1 (mV)"
+    gyro_cols = [f"{sensor1} | GYRO {ax} (deg/s)" for ax in ["X", "Y", "Z"]]
+    acc_cols = [f"{sensor1} | ACC {ax} (G)" for ax in ["X", "Y", "Z"]]
+
+    fig, axes = plt.subplots(3, 1, figsize=(14, 8), sharex=True)
+
+    # EMG
+    axes[0].plot(plot_time, plot_df[emg_col].to_list(), linewidth=0.5)
+    axes[0].set_ylabel("mV")
+    axes[0].set_title("EMG - Sensor 1")
+    axes[0].axvline(x=first_marker_time, color="red", linestyle="--", linewidth=1.5, label="Marker")
+    axes[0].legend(loc="upper right", fontsize=8)
+
+    # Gyro
+    for col in gyro_cols:
+        ax_label = col.split(" | ")[1].split(" (")[0]
+        axes[1].plot(plot_time, plot_df[col].to_list(), linewidth=0.5, label=ax_label)
+    axes[1].set_ylabel("deg/s")
+    axes[1].set_title("Gyroscope - Sensor 1")
+    axes[1].legend(loc="upper right", fontsize=8)
+    axes[1].axvline(x=first_marker_time, color="red", linestyle="--", linewidth=1.5)
+
+    # Accel
+    for col in acc_cols:
+        ax_label = col.split(" | ")[1].split(" (")[0]
+        axes[2].plot(plot_time, plot_df[col].to_list(), linewidth=0.5, label=ax_label)
+    axes[2].set_ylabel("G")
+    axes[2].set_title("Accelerometer - Sensor 1")
+    axes[2].set_xlabel("Time (s)")
+    axes[2].legend(loc="upper right", fontsize=8)
+    axes[2].axvline(x=first_marker_time, color="red", linestyle="--", linewidth=1.5)
+
+    plt.tight_layout()
+    plt.show()
+
+    return
 
 
 if __name__ == "__main__":
