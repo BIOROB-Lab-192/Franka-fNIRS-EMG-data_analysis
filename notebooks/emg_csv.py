@@ -161,12 +161,6 @@ def _(load_trigno_csv):
     return (main_df,)
 
 
-@app.cell
-def _(main_df):
-    main_df
-    return
-
-
 @app.cell(hide_code=True)
 def _(pl):
     def sync_sensor_streams(df, ref_col=None, strategy="nearest"):
@@ -280,65 +274,106 @@ def _(main_df, pl, sync_sensor_streams):
     return (synced_df,)
 
 
-@app.cell
-def _(synced_df):
-    synced_df
-    return
-
-
 @app.cell(hide_code=True)
-def _(pl, synced_df):
-    # Count zeros (0, 0.0, or "0") per column in synced_df
-    print(f"{'Column':<60} {'Zeros':>8}")
-    print("-" * 70)
-    total_with_zeros = 0
-    for c in synced_df.columns:
-        s = synced_df.select(pl.col(c)).to_series()
-        numeric_zeros = (s == 0).sum()
-        str_zeros = (s.cast(pl.Utf8).str.strip_chars() == "0").sum()
-        zeros = numeric_zeros + str_zeros
-        if zeros > 0:
-            print(f"{c:<60} {zeros:>8}")
-            total_with_zeros += 1
-    print("-" * 70)
-    print(f"Total columns with zeros: {total_with_zeros}")
-    return
+def _(cleaned, pl, synced_df):
+    # Compare original vs cleaned at the same dropout (rows 2610–2630)
+    _start, _end = 2610, 2630
 
-
-@app.cell(hide_code=True)
-def _(pl, synced_df):
-    # Slice 10 rows before and after the first zero in any value column
-    _val_cols = [c for c in synced_df.columns if c != "time"]
-
-    _nz_series = synced_df.select(
-        pl.sum_horizontal(
-            [(pl.col(c) == 0).cast(pl.Int32) for c in _val_cols]
-        ).alias("n_zeros")
-    ).to_series()
-
-    _first = (_nz_series > 0).arg_true()[0]
-    _start = max(0, _first - 10)
-    _end = min(len(synced_df), _first + 11)
-
-    # Build a clean slice with a row index and zero count
-    synced_df[_start:_end].with_columns(
+    _orig = synced_df[_start:_end].with_columns(
         pl.lit(list(range(_start, _end))).alias("row"),
-        _nz_series[_start:_end].alias("n_zeros"),
-    ).select("row", "time", "n_zeros", pl.all().exclude("row", "time", "n_zeros"))
+    )
+    _clean = cleaned[_start:_end].with_columns(
+        pl.lit(list(range(_start, _end))).alias("row"),
+    )
+
+    # Focus on Avanti 2 ACC/GYRO (the channels that dropped) + Avanti 2 EMG
+    _focus = [
+        "row",
+        "time",
+        "Avanti Sensor 2 (82529) | EMG 1 (mV)",
+        "Avanti Sensor 2 (82529) | ACC X (G)",
+        "Avanti Sensor 2 (82529) | ACC Y (G)",
+        "Avanti Sensor 2 (82529) | ACC Z (G)",
+        "Avanti Sensor 2 (82529) | GYRO X (deg/s)",
+        "Avanti Sensor 2 (82529) | GYRO Y (deg/s)",
+        "Avanti Sensor 2 (82529) | GYRO Z (deg/s)",
+    ]
+
+    # Build comparison: orig value | cleaned value for each channel
+    parts = [_orig.select("row", "time")]
+    for _ch in _focus[2:]:  # skip row, time
+        _ch_short = _ch.split(" | ", 1)[1].replace(" (", "_").replace(")", "")
+        parts.append(_orig.select(pl.col(_ch).alias(f"{_ch_short}_orig")))
+        parts.append(_clean.select(pl.col(_ch).alias(f"{_ch_short}_clean")))
+
+    comparison = pl.concat(parts, how="horizontal")
+    comparison
     return
 
 
-@app.cell
-def _(synced_df):
+@app.cell(hide_code=True)
+def _(pl):
+    def handle_dropouts(df):
+        """
+        Handle sensor dropout zeros with a hybrid strategy.
+
+        EMG channels (mV, %): replace 0 with NaN — honest about missing data.
+        IMU channels (G, deg/s): replace 0 with NaN, then interpolate —
+        the signal is physically smooth over short gaps.
+
+        Args:
+            df: Polars DataFrame from sync_sensor_streams (time + value columns).
+
+        Returns:
+            Polars DataFrame with the same shape. EMG channels have nulls where
+            zeros were; IMU channels have interpolated values.
+        """
+        emg_cols = [c for c in df.columns if "(mV)" in c or "(%)" in c]
+        imu_cols = [c for c in df.columns if "(G)" in c or "(deg/s)" in c]
+        value_cols = emg_cols + imu_cols
+
+        # Step 1: replace all 0s with null
+        result = df.with_columns(
+            pl.when(pl.col(c) == 0).then(None).otherwise(pl.col(c)).alias(c)
+            for c in value_cols
+        )
+
+        # Step 2: interpolate IMU channels only
+        result = result.with_columns(
+            pl.col(c).interpolate().alias(c) for c in imu_cols
+        )
+
+        return result
+
+    return (handle_dropouts,)
 
 
-    import plotly.express as px
+@app.cell(hide_code=True)
+def _(handle_dropouts, pl, synced_df):
+    # Apply dropout handling
+    cleaned = handle_dropouts(synced_df)
 
-    quick_plot = lambda s: px.line(y=s.to_list(), title=s.name).show()
+    # Verify
+    _emg_cols = [c for c in synced_df.columns if "(mV)" in c or "(%)" in c]
+    _imu_cols = [c for c in synced_df.columns if "(G)" in c or "(deg/s)" in c]
 
-    s_ = synced_df["Avanti Sensor 1 (82703) | EMG 1 (mV)"]
-    quick_plot(s_[::10])
-    return
+    _emg_zeros = sum(
+        (synced_df.select(pl.col(c) == 0).sum().item()) for c in _emg_cols
+    )
+    _imu_zeros = sum(
+        (synced_df.select(pl.col(c) == 0).sum().item()) for c in _imu_cols
+    )
+    _emg_nulls = sum(
+        cleaned.select(pl.col(c).null_count()).item() for c in _emg_cols
+    )
+    _imu_nulls = sum(
+        cleaned.select(pl.col(c).null_count()).item() for c in _imu_cols
+    )
+
+    print(f"Shape: {cleaned.shape}")
+    print(f"EMG: {_emg_zeros} zeros -> {_emg_nulls} nulls")
+    print(f"IMU: {_imu_zeros} zeros -> {_imu_nulls} nulls (interpolated)")
+    return (cleaned,)
 
 
 if __name__ == "__main__":
