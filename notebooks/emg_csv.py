@@ -157,7 +157,7 @@ def _(Path, csv, pl):
 
 @app.cell
 def _(load_trigno_csv):
-    main_df, marker_df = load_trigno_csv("./data/raw/ronald_robot4/Trial_3.csv")
+    main_df, marker_df = load_trigno_csv("./data/raw/jiang_norobot1/Trial_6.csv")
     return main_df, marker_df
 
 
@@ -380,9 +380,9 @@ def _(handle_dropouts, pl, synced_df):
 def _(cleaned, marker_df, plt):
 
     # Sensor 1 marker verification — 15s before and after first marker
-    which_marker = 0
+    which_marker = 23
     first_marker_time = float(marker_df["Time (s)"].to_list()[0])+ (40 * which_marker)
-    t_min = first_marker_time - 1
+    t_min = first_marker_time - 5
     t_max = first_marker_time + 5
 
     time_data = cleaned["time"]
@@ -426,6 +426,41 @@ def _(cleaned, marker_df, plt):
 
     plt.tight_layout()
     plt.show()
+
+    return
+
+
+@app.cell
+def _(cleaned, marker_df, pl):
+
+    def generate_epochs(cleaned, marker_df, epoch_duration=40.0, total_markers=30):
+        """
+        Generate evenly-spaced epoch markers starting from the first marker.
+    
+        Args:
+            cleaned: cleaned dataframe with 'time' column
+            marker_df: marker dataframe from load_trigno_csv
+            epoch_duration: seconds between markers (default: 40)
+            total_markers: maximum number of markers (default: 30)
+    
+        Returns:
+            Polars DataFrame with columns: epoch_id (1-indexed), epoch_start
+        """
+        first_marker_time = float(marker_df["Time (s)"].to_list()[0])
+        time_end = cleaned["time"][-1]
+    
+        onsets = []
+        t = first_marker_time
+        while len(onsets) < total_markers and t + epoch_duration <= time_end:
+            onsets.append(t)
+            t += epoch_duration
+    
+        return pl.DataFrame({
+            "epoch_id": list(range(1, len(onsets) + 1)),
+            "epoch_start": onsets,
+        })
+    epochs_df = generate_epochs(cleaned, marker_df)
+    epochs_df
 
     return
 
