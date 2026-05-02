@@ -15,7 +15,7 @@ def _():
     import marimo as mo
     import matplotlib.pyplot as plt
 
-    return Path, csv, load_data, mo, pl, plt
+    return Path, csv, load_data, mo, pl
 
 
 @app.cell
@@ -29,7 +29,7 @@ def _(load_data, mo):
     print(data_files)
 
     mo.md(f"**Found {len(data_files)} participants:** `{list(data_files.keys())}`")
-    return
+    return PROCESSED_DIR, RAW_DIR
 
 
 @app.cell(hide_code=True)
@@ -155,12 +155,6 @@ def _(Path, csv, pl):
     return (load_trigno_csv,)
 
 
-@app.cell
-def _(load_trigno_csv):
-    main_df, marker_df = load_trigno_csv("./data/raw/jiang_norobot1/Trial_6.csv")
-    return main_df, marker_df
-
-
 @app.cell(hide_code=True)
 def _(pl):
     def sync_sensor_streams(df, ref_col=None, strategy="nearest"):
@@ -258,59 +252,6 @@ def _(pl):
     return (sync_sensor_streams,)
 
 
-@app.cell
-def _(main_df, pl, sync_sensor_streams):
-    # Sync all sensor streams onto the fastest timebase (Duo 3 EMG 1 @ 1926 Hz)
-    synced_df = sync_sensor_streams(main_df)
-
-    print(f"Synced: {synced_df.shape[0]} rows × {synced_df.shape[1]} columns")
-    print(
-        f"Time range: {synced_df['time'].min():.3f}s → {synced_df['time'].max():.3f}s"
-    )
-    print(f"Duration: {synced_df['time'].max() - synced_df['time'].min():.2f}s")
-    print(
-        f"Nulls: {sum(synced_df.select(pl.col(c).null_count()).item() for c in synced_df.columns)}"
-    )
-    return (synced_df,)
-
-
-@app.cell(hide_code=True)
-def _(cleaned, pl, synced_df):
-    # Compare original vs cleaned at the same dropout (rows 2610–2630)
-    _start, _end = 2610, 2630
-
-    _orig = synced_df[_start:_end].with_columns(
-        pl.lit(list(range(_start, _end))).alias("row"),
-    )
-    _clean = cleaned[_start:_end].with_columns(
-        pl.lit(list(range(_start, _end))).alias("row"),
-    )
-
-    # Focus on Avanti 2 ACC/GYRO (the channels that dropped) + Avanti 2 EMG
-    _focus = [
-        "row",
-        "time",
-        "Avanti Sensor 2 (82529) | EMG 1 (mV)",
-        "Avanti Sensor 2 (82529) | ACC X (G)",
-        "Avanti Sensor 2 (82529) | ACC Y (G)",
-        "Avanti Sensor 2 (82529) | ACC Z (G)",
-        "Avanti Sensor 2 (82529) | GYRO X (deg/s)",
-        "Avanti Sensor 2 (82529) | GYRO Y (deg/s)",
-        "Avanti Sensor 2 (82529) | GYRO Z (deg/s)",
-    ]
-
-    # Build comparison: orig value | cleaned value for each channel
-    parts = [_orig.select("row", "time")]
-    for _ch in _focus[2:]:  # skip row, time
-        _ch_short = _ch.split(" | ", 1)[1].replace(" (", "_").replace(")", "")
-        parts.append(_orig.select(pl.col(_ch).alias(f"{_ch_short}_orig")))
-        parts.append(_clean.select(pl.col(_ch).alias(f"{_ch_short}_clean")))
-
-    comparison = pl.concat(parts, how="horizontal")
-    comparison
-    return
-
-
 @app.cell(hide_code=True)
 def _(pl):
     def handle_dropouts(df):
@@ -348,88 +289,6 @@ def _(pl):
     return (handle_dropouts,)
 
 
-@app.cell(hide_code=True)
-def _(handle_dropouts, pl, synced_df):
-    # Apply dropout handling
-    cleaned = handle_dropouts(synced_df)
-
-    # Verify
-    _emg_cols = [c for c in synced_df.columns if "(mV)" in c or "(%)" in c]
-    _imu_cols = [c for c in synced_df.columns if "(G)" in c or "(deg/s)" in c]
-
-    _emg_zeros = sum(
-        (synced_df.select(pl.col(c) == 0).sum().item()) for c in _emg_cols
-    )
-    _imu_zeros = sum(
-        (synced_df.select(pl.col(c) == 0).sum().item()) for c in _imu_cols
-    )
-    _emg_nulls = sum(
-        cleaned.select(pl.col(c).null_count()).item() for c in _emg_cols
-    )
-    _imu_nulls = sum(
-        cleaned.select(pl.col(c).null_count()).item() for c in _imu_cols
-    )
-
-    print(f"Shape: {cleaned.shape}")
-    print(f"EMG: {_emg_zeros} zeros -> {_emg_nulls} nulls")
-    print(f"IMU: {_imu_zeros} zeros -> {_imu_nulls} nulls (interpolated)")
-    return (cleaned,)
-
-
-@app.cell
-def _(cleaned, marker_df, plt):
-
-    # Sensor 1 marker verification — 15s before and after first marker
-    which_marker = 23
-    first_marker_time = float(marker_df["Time (s)"].to_list()[0])+ (40 * which_marker)
-    t_min = first_marker_time - 5
-    t_max = first_marker_time + 5
-
-    time_data = cleaned["time"]
-    mask = (time_data >= t_min) & (time_data <= t_max)
-    plot_df = cleaned.filter(mask)
-    plot_time = time_data.filter(mask).to_list()
-
-    # Sensor 1 channels
-    sensor1 = "Avanti Sensor 1 (82703)"
-    emg_col = f"{sensor1} | EMG 1 (mV)"
-    gyro_cols = [f"{sensor1} | GYRO {ax} (deg/s)" for ax in ["X", "Y", "Z"]]
-    acc_cols = [f"{sensor1} | ACC {ax} (G)" for ax in ["X", "Y", "Z"]]
-
-    fig, axes = plt.subplots(3, 1, figsize=(14, 8), sharex=True)
-
-    # EMG
-    axes[0].plot(plot_time, plot_df[emg_col].to_list(), linewidth=0.5)
-    axes[0].set_ylabel("mV")
-    axes[0].set_title("EMG - Sensor 1")
-    axes[0].axvline(x=first_marker_time, color="red", linestyle="--", linewidth=1.5, label="Marker")
-    axes[0].legend(loc="upper right", fontsize=8)
-
-    # Gyro
-    for col in gyro_cols:
-        ax_label = col.split(" | ")[1].split(" (")[0]
-        axes[1].plot(plot_time, plot_df[col].to_list(), linewidth=0.5, label=ax_label)
-    axes[1].set_ylabel("deg/s")
-    axes[1].set_title("Gyroscope - Sensor 1")
-    axes[1].legend(loc="upper right", fontsize=8)
-    axes[1].axvline(x=first_marker_time, color="red", linestyle="--", linewidth=1.5)
-
-    # Accel
-    for col in acc_cols:
-        ax_label = col.split(" | ")[1].split(" (")[0]
-        axes[2].plot(plot_time, plot_df[col].to_list(), linewidth=0.5, label=ax_label)
-    axes[2].set_ylabel("G")
-    axes[2].set_title("Accelerometer - Sensor 1")
-    axes[2].set_xlabel("Time (s)")
-    axes[2].legend(loc="upper right", fontsize=8)
-    axes[2].axvline(x=first_marker_time, color="red", linestyle="--", linewidth=1.5)
-
-    plt.tight_layout()
-    plt.show()
-
-    return
-
-
 @app.cell
 def _(pl):
 
@@ -460,31 +319,19 @@ def _(pl):
             "epoch_start": onsets,
         })
 
-    return
+    return (generate_epochs,)
 
 
 @app.cell(hide_code=True)
-def _(epochs_df, pl):
+def _(pl):
 
     def add_metadata(epochs_df, run_id):
-        """
-        Add task metadata to epochs dataframe.
-    
-        Args:
-            epochs_df: output from generate_epochs()
-            run_id: session key e.g. "jiang_norobot_1"
-    
-        Returns:
-            DataFrame with task_instance, run_id, is_robot, participant columns
-        """
         import re
         match = re.match(r"^(\w+?)_(robot|norobot)(?:_(\d+))?$", run_id)
         if not match:
             raise ValueError(f"Could not parse run_id: {run_id}")
-    
         participant = match.group(1)
         is_robot = match.group(2) == "robot"
-    
         return epochs_df.with_columns([
             pl.col("epoch_id").alias("task_instance"),
             pl.lit(run_id).alias("run_id"),
@@ -492,79 +339,108 @@ def _(epochs_df, pl):
             pl.lit(participant).alias("participant"),
         ]).drop("epoch_id")
 
-    metadata_df = add_metadata(epochs_df, "jiang_norobot_1")
-    metadata_df
 
-    return (metadata_df,)
+    return (add_metadata,)
 
 
-@app.cell(hide_code=True)
-def _(cleaned, metadata_df):
-
-    def merge_metadata(cleaned, metadata_df):
-        """
-        Merge metadata into cleaned data, labeling each row with its epoch.
-    
-        Args:
-            cleaned: cleaned dataframe with 'time' column
-            metadata_df: output from add_metadata()
-    
-        Returns:
-            Cleaned data with epoch_start, task_instance, run_id, is_robot, participant columns added.
-            Rows before the first epoch are dropped.
-        """
-        result = cleaned.join_asof(
-            metadata_df.sort("epoch_start"),
-            left_on="time",
-            right_on="epoch_start",
-            strategy="backward",
-        )
-    
-        # Drop rows before first epoch (no match)
-        result = result.drop_nulls(subset=["task_instance"])
-    
-        return result
-
-    merged_df = merge_metadata(cleaned, metadata_df)
-    print(f"Rows: {merged_df.shape[0]:,}  Columns: {merged_df.shape[1]}")
-    print(f"Epochs: {merged_df['task_instance'].n_unique()}")
-    merged_df
-
-    return (merged_df,)
+@app.function(hide_code=True)
+def merge_metadata(cleaned, metadata_df):
+    result = cleaned.join_asof(
+        metadata_df.sort("epoch_start"),
+        left_on="time",
+        right_on="epoch_start",
+        strategy="backward",
+    )
+    result = result.drop_nulls(subset=["task_instance"])
+    return result
 
 
 @app.cell(hide_code=True)
-def _(merged_df, pl):
+def _(pl):
 
     def filter_epoch_window(merged_df, window_duration=15.0):
-        """
-        Filter to only rows within window_duration seconds after each epoch marker,
-        and drop any calibrated columns.
-    
-        Args:
-            merged_df: output from merge_metadata()
-            window_duration: seconds after epoch_start to keep (default: 15)
-    
-        Returns:
-            Filtered DataFrame
-        """
         result = merged_df.filter(
             (pl.col("time") >= pl.col("epoch_start")) & 
             (pl.col("time") < pl.col("epoch_start") + window_duration)
         )
-    
-        # Drop calibrated columns
         cal_cols = [c for c in result.columns if "calibrated" in c.lower()]
         if cal_cols:
             result = result.drop(cal_cols)
-            print(f"Dropped {len(cal_cols)} calibrated column(s): {cal_cols}")
-    
         return result
 
-    windowed_df = filter_epoch_window(merged_df)
-    print(f"Rows: {windowed_df.shape[0]:,}  Columns: {windowed_df.shape[1]}")
-    windowed_df
 
+    return (filter_epoch_window,)
+
+
+@app.cell(hide_code=True)
+def _(
+    PROCESSED_DIR,
+    RAW_DIR,
+    add_metadata,
+    filter_epoch_window,
+    generate_epochs,
+    handle_dropouts,
+    load_data,
+    load_trigno_csv,
+    pl,
+    sync_sensor_streams,
+):
+    def process_session(_emg_path, _run_id):
+        _main_df, _marker_df = load_trigno_csv(_emg_path)
+        _synced = sync_sensor_streams(_main_df)
+        _cleaned = handle_dropouts(_synced)
+        _epochs = generate_epochs(_cleaned, _marker_df)
+        _metadata = add_metadata(_epochs, _run_id)
+        _merged = merge_metadata(_cleaned, _metadata)
+        _windowed = filter_epoch_window(_merged)
+        return _windowed
+
+    # Batch process all sessions
+    _emg_files = load_data(RAW_DIR)
+
+    # First pass: find common columns through full pipeline
+    print("Scanning schemas...")
+    _all_col_sets = []
+    for _run_id in sorted(_emg_files.keys()):
+        _emg_path = _emg_files[_run_id]["emg"]
+        if _emg_path is None:
+            raise ValueError(f"No EMG file found for {_run_id}")
+        _df = process_session(_emg_path, _run_id)
+        _all_col_sets.append(set(_df.columns))
+
+    _common_cols = _all_col_sets[0]
+    for _cols in _all_col_sets[1:]:
+        _common_cols &= _cols
+    _common_cols_sorted = sorted(_common_cols)
+    print(f"Common columns: {len(_common_cols_sorted)}")
+
+    # Second pass: process, align columns, collect
+    _all_session_dfs = []
+    for _run_id in sorted(_emg_files.keys()):
+        _emg_path = _emg_files[_run_id]["emg"]
+        if _emg_path is None:
+            raise ValueError(f"No EMG file found for {_run_id}")
+        print(f"Processing {_run_id}...", end=" ")
+        _session_df = process_session(_emg_path, _run_id)
+        # Align to common columns
+        _session_df = _session_df.select(_common_cols_sorted)
+        _n_rows = _session_df.shape[0]
+        _n_epochs = _session_df["task_instance"].n_unique()
+        print(f"{_n_rows:,} rows, {_n_epochs} epochs")
+        _all_session_dfs.append(_session_df)
+
+    # Combine and export
+    print()
+    print(f"Concatenating {len(_all_session_dfs)} sessions...")
+    final_df = pl.concat(_all_session_dfs)
+    print(f"Total: {final_df.shape[0]:,} rows x {final_df.shape[1]} columns")
+
+    import os
+    os.makedirs(PROCESSED_DIR, exist_ok=True)
+    export_path = f"{PROCESSED_DIR}/all_emg_epochs.parquet"
+    final_df.write_parquet(export_path)
+    print(f"Exported to {export_path}")
+    final_df
     return
 
 
