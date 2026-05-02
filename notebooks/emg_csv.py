@@ -462,6 +462,90 @@ def _(cleaned, marker_df, pl):
     epochs_df = generate_epochs(cleaned, marker_df)
     epochs_df
 
+    return (epochs_df,)
+
+
+@app.cell(hide_code=True)
+def _(epochs_df, pl):
+
+    def add_metadata(epochs_df, run_id):
+        """
+        Add task metadata to epochs dataframe.
+    
+        Args:
+            epochs_df: output from generate_epochs()
+            run_id: session key e.g. "jiang_norobot_1"
+    
+        Returns:
+            DataFrame with task_instance, run_id, is_robot, participant columns
+        """
+        import re
+        match = re.match(r"^(\w+?)_(robot|norobot)(?:_(\d+))?$", run_id)
+        if not match:
+            raise ValueError(f"Could not parse run_id: {run_id}")
+    
+        participant = match.group(1)
+        is_robot = match.group(2) == "robot"
+    
+        return epochs_df.with_columns([
+            pl.col("epoch_id").alias("task_instance"),
+            pl.lit(run_id).alias("run_id"),
+            pl.lit(is_robot).alias("is_robot"),
+            pl.lit(participant).alias("participant"),
+        ]).drop("epoch_id")
+
+    metadata_df = add_metadata(epochs_df, "jiang_norobot_1")
+    metadata_df
+
+    return (metadata_df,)
+
+
+@app.cell(hide_code=True)
+def _(cleaned, metadata_df, pl):
+
+    def merge_metadata(cleaned, metadata_df):
+        """
+        Merge metadata into cleaned data, labeling each row with its epoch.
+    
+        Args:
+            cleaned: cleaned dataframe with 'time' column
+            metadata_df: output from add_metadata()
+    
+        Returns:
+            Cleaned data with task_instance, run_id, is_robot, participant columns added.
+            Rows outside any epoch window are dropped.
+        """
+        # Add epoch boundaries for filtering
+        bounds = metadata_df.with_columns([
+            pl.col("epoch_start").shift(-1).alias("epoch_end"),
+        ])
+        # Last epoch extends to end of data
+        last_end = cleaned["time"][-1]
+        bounds = bounds.with_columns(
+            pl.when(pl.col("epoch_end").is_null())
+            .then(pl.lit(last_end))
+            .otherwise(pl.col("epoch_end"))
+            .alias("epoch_end")
+        )
+    
+        # Assign each row to an epoch using join_asof
+        # Join cleaned with epoch starts to find which epoch each row belongs to
+        result = cleaned.join_asof(
+            metadata_df.rename({"epoch_start": "time"}).sort("time"),
+            on="time",
+            strategy="forward",
+        )
+    
+        # Drop rows that didn't match (before first epoch)
+        result = result.drop_nulls(subset=["task_instance"])
+    
+        return result
+
+    merged_df = merge_metadata(cleaned, metadata_df)
+    print(f"Rows: {merged_df.shape[0]:,}  Columns: {merged_df.shape[1]}")
+    print(f"Epochs: {merged_df['task_instance'].n_unique()}")
+    merged_df
+
     return
 
 
