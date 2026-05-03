@@ -175,6 +175,11 @@ def _(mo):
     return fnirs_channel_options, fnirs_channel_selector
 
 
+@app.cell
+def _():
+    return
+
+
 @app.cell(hide_code=True)
 def _(
     df,
@@ -199,29 +204,26 @@ def _(
         & (pl.col("time_sec") <= fnirs_ch_TIME_MAX)
     )
 
-    # Get selected channels, grouped by source-detector pair
+    # Get selected channels
     fnirs_ch_selected = [
         fnirs_channel_options[_ch] for _ch in fnirs_channel_selector.value
     ]
 
-    # Build pair → {HbO: col, HbR: col} mapping
+    # Build pair → {HbO: col, HbR: col}
     fnirs_ch_pairs = {}
     for _lbl in fnirs_channel_selector.value:
         _pair = _lbl.replace(" HbO", "").replace(" HbR", "")
         _chrom = "HbO" if "HbO" in _lbl else "HbR"
-        if _pair not in fnirs_ch_pairs:
-            fnirs_ch_pairs[_pair] = {}
-        fnirs_ch_pairs[_pair][_chrom] = fnirs_channel_options[_lbl]
+        fnirs_ch_pairs.setdefault(_pair, {})[_chrom] = fnirs_channel_options[_lbl]
 
+    # No selection case
     if not fnirs_ch_selected:
         fnirs_ch_fig, _ax = plt.subplots(figsize=(14, 5))
-        _ax.text(
-            0.5, 0.5, "No channels selected", ha="center", va="center", fontsize=14
-        )
+        _ax.text(0.5, 0.5, "No channels selected", ha="center", va="center", fontsize=14)
         _ax.set_axis_off()
         plt.show()
+
     else:
-        # Compute per-channel means across runs per condition
         fnirs_ch_time = None
         fnirs_ch_robot = {}
         fnirs_ch_no_robot = {}
@@ -229,19 +231,13 @@ def _(
         for _col in fnirs_ch_selected:
             _avg = (
                 fnirs_ch_filtered.group_by("time_sec", "is_robot")
-                .agg(
-                    [
-                        pl.col(_col).mean().alias("val"),
-                    ]
-                )
+                .agg(pl.col(_col).mean().alias("val"))
                 .sort("time_sec")
                 .with_columns((pl.col("val") * fnirs_ch_UM).alias("val"))
             )
 
             if fnirs_ch_time is None:
-                fnirs_ch_time = _avg.filter(pl.col("is_robot") == True)[
-                    "time_sec"
-                ].to_numpy()
+                fnirs_ch_time = _avg.filter(pl.col("is_robot") == True)["time_sec"].to_numpy()
 
             _robot = _avg.filter(pl.col("is_robot") == True)["val"].to_numpy()
             _no_robot = _avg.filter(pl.col("is_robot") == False)["val"].to_numpy()
@@ -249,14 +245,12 @@ def _(
             if len(_robot) > fnirs_ch_SG_WIN:
                 _robot = savgol_filter(_robot, fnirs_ch_SG_WIN, fnirs_ch_SG_ORD)
             if len(_no_robot) > fnirs_ch_SG_WIN:
-                _no_robot = savgol_filter(
-                    _no_robot, fnirs_ch_SG_WIN, fnirs_ch_SG_ORD
-                )
+                _no_robot = savgol_filter(_no_robot, fnirs_ch_SG_WIN, fnirs_ch_SG_ORD)
 
             fnirs_ch_robot[_col] = _robot
             fnirs_ch_no_robot[_col] = _no_robot
 
-        # Color: one unique color per source-detector pair
+        # Colors per pair
         _pair_names = sorted(fnirs_ch_pairs.keys())
         _cmap = plt.cm.tab10 if len(_pair_names) <= 10 else plt.cm.tab20
         fnirs_ch_pair_colors = {
@@ -264,35 +258,26 @@ def _(
             for _i, _p in enumerate(_pair_names)
         }
 
-        # Plot
+        # Create figure (base height = 5)
         fnirs_ch_fig, (fnirs_ch_ax1, fnirs_ch_ax2) = plt.subplots(
             1, 2, figsize=(14, 5)
         )
 
+        # Plot lines
         for _pair, _chroms in fnirs_ch_pairs.items():
             _c = fnirs_ch_pair_colors[_pair]
 
             if "HbO" in _chroms:
                 _col = _chroms["HbO"]
-                fnirs_ch_ax1.plot(
-                    fnirs_ch_time, fnirs_ch_robot[_col], color=_c, linestyle="-"
-                )
-                fnirs_ch_ax2.plot(
-                    fnirs_ch_time, fnirs_ch_no_robot[_col], color=_c, linestyle="-"
-                )
+                fnirs_ch_ax1.plot(fnirs_ch_time, fnirs_ch_robot[_col], color=_c, linestyle="-")
+                fnirs_ch_ax2.plot(fnirs_ch_time, fnirs_ch_no_robot[_col], color=_c, linestyle="-")
 
             if "HbR" in _chroms:
                 _col = _chroms["HbR"]
-                fnirs_ch_ax1.plot(
-                    fnirs_ch_time, fnirs_ch_robot[_col], color=_c, linestyle="--"
-                )
-                fnirs_ch_ax2.plot(
-                    fnirs_ch_time,
-                    fnirs_ch_no_robot[_col],
-                    color=_c,
-                    linestyle="--",
-                )
+                fnirs_ch_ax1.plot(fnirs_ch_time, fnirs_ch_robot[_col], color=_c, linestyle="--")
+                fnirs_ch_ax2.plot(fnirs_ch_time, fnirs_ch_no_robot[_col], color=_c, linestyle="--")
 
+        # Axes formatting
         fnirs_ch_ax1.set_title("Robot Trials")
         fnirs_ch_ax1.set_xlabel("Time (s)")
         fnirs_ch_ax1.set_ylabel("Concentration (μM)")
@@ -303,7 +288,7 @@ def _(
         fnirs_ch_ax2.set_ylabel("Concentration (μM)")
         fnirs_ch_ax2.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
 
-        # Build legend handles
+        # Legend handles
         from matplotlib.lines import Line2D
 
         _legend_handles = []
@@ -315,29 +300,39 @@ def _(
                 )
             if "HbR" in fnirs_ch_pairs[_pair]:
                 _legend_handles.append(
-                    Line2D(
-                        [0], [0], color=_c, linestyle="--", label=f"{_pair} HbR"
-                    )
+                    Line2D([0], [0], color=_c, linestyle="--", label=f"{_pair} HbR")
                 )
 
-        # Place legend: full width below plots, wraps naturally
-        _n_handles = len(_legend_handles)
-        # Use enough columns to fill the width; matplotlib wraps if needed
-        _ncols = min(_n_handles, 8)
+        # ---- DYNAMIC LEGEND SIZING (THIS FIXES YOUR ISSUE) ----
+        _n_actual = len(_legend_handles)
+        _ncols_actual = min(_n_actual, 8)
+        _n_legend_rows = (_n_actual + _ncols_actual - 1) // _ncols_actual
+
+        # Grow figure ONLY when needed
+        fnirs_ch_fig.set_size_inches(14, 5 + 0.35 * _n_legend_rows)
+
+        # Adjust bottom spacing dynamically
+        _bottom = min(0.34, 0.12 + 0.045 * _n_legend_rows)
 
         fnirs_ch_fig.legend(
             handles=_legend_handles,
-            loc="upper center",
-            bbox_to_anchor=(0.5, 0.0),
-            ncol=_ncols,
-            fontsize=7,
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.03),
+            ncol=_ncols_actual,
+            fontsize=9,
             frameon=False,
-            borderaxespad=0,
+            handlelength=2,
+            handletextpad=0.5,
+            columnspacing=1.5,
         )
 
-        # Reserve space below plots for legend — roughly 0.07 per row
-        _n_rows = (_n_handles + _ncols - 1) // _ncols
-        fnirs_ch_fig.subplots_adjust(bottom=0.05 + 0.07 * _n_rows)
+        fnirs_ch_fig.subplots_adjust(
+            left=0.06,
+            right=0.99,
+            top=0.93,
+            bottom=_bottom,
+            wspace=0.20,
+        )
 
         plt.show()
     return
