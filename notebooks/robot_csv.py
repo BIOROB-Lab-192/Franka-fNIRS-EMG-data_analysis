@@ -223,7 +223,15 @@ def process_robot_file(
             start_idx = int(round(repeat_idx_zero_based * n_rows / repeat_count))
             end_idx = int(round((repeat_idx_zero_based + 1) * n_rows / repeat_count))
 
-            chunk = run_rows.slice(start_idx, max(0, end_idx - start_idx)).with_columns(
+            chunk = run_rows.slice(start_idx, max(0, end_idx - start_idx))
+
+            # Use the actual first timestamp of this chunk, not the original run start.
+            # Otherwise repeated markers get the same start_timestamp, pushing the
+            # second chunk's relative time past 15s and losing data.
+            chunk_first_ts = chunk[time_col][0] if chunk.height > 0 else seq["start_timestamp"]
+            chunk_duration = chunk[time_col][-1] - chunk_first_ts if chunk.height > 1 else seq["duration_seconds"]
+
+            chunk = chunk.with_columns(
                 [
                     pl.lit(f"task_{seq['marker']}").alias("task_id"),
                     pl.lit(seq["task_index"] + 1).alias("task_instance"),
@@ -232,8 +240,8 @@ def process_robot_file(
                     pl.lit(participant).alias("participant"),
                     pl.lit(seq["marker"]).alias("marker"),
                     pl.lit(seq["marker_repeat_index"]).alias("marker_repeat_index"),
-                    pl.lit(seq["start_timestamp"]).alias("sequence_start_timestamp"),
-                    pl.lit(seq["duration_seconds"]).alias("duration_seconds"),
+                    pl.lit(chunk_first_ts).alias("sequence_start_timestamp"),
+                    pl.lit(chunk_duration).alias("duration_seconds"),
                 ]
             )
 
