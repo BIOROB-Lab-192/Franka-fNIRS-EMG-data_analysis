@@ -1,7 +1,7 @@
 import marimo
 
 __generated_with = "0.23.3"
-app = marimo.App()
+app = marimo.App(width="medium")
 
 
 @app.cell
@@ -34,7 +34,7 @@ def _():
 @app.cell
 def _(RAW_DIR, mo):
     import sys
-    sys.path.insert(0, "/Users/haider/code/data_analysis")
+    sys.path.insert(0, "/Users/haider/code/Franka-fNIRS-EMG-data_analysis")
     from src.loaders.loader import load_data
 
     data_files = load_data(RAW_DIR)
@@ -215,6 +215,7 @@ def _(norobot_epochs, plt, robot_epochs):
         ax.set(xlabel="Time (s)", ylabel="Concentration (μM)")
         ax.legend()
         ax.axvline(0, color="k", linestyle="--", linewidth=0.8)
+    plt.savefig("./figures/combined_hbo-hbr.png")
     plt.show()
     return
 
@@ -248,6 +249,7 @@ def _(norobot_epochs, plt, robot_epochs):
         cmp_ax.set_xlabel("Time (s)", fontsize=7)
         cmp_ax.set_ylabel("Concentration (μM)", fontsize=7)
         cmp_ax.tick_params(labelsize=7)
+    plt.savefig("./figures/per-task_hbo-hbr.png")
     plt.show()
     return
 
@@ -283,16 +285,25 @@ def _(PROCESSED_DIR, data_files, mne, os, pl, preprocess, task_ids):
 
         if "_norobot_" in dataset_key:
             participant, run_str = dataset_key.rsplit("_norobot_", 1)
+            condition = "norobot"
         elif "_robot_" in dataset_key:
             participant, run_str = dataset_key.rsplit("_robot_", 1)
+            condition = "robot"
         else:
             participant = dataset_key
             run_str = None
+            condition = "unknown"
 
         try:
-            run_id = int(run_str) if run_str is not None else None
+            run_num = int(run_str) if run_str is not None else None
         except ValueError:
-            run_id = run_str
+            run_num = run_str
+
+        # 🔹 Build new run_id string
+        if run_num is not None:
+            run_id = f"{participant}_{condition}_{run_num}"
+        else:
+            run_id = f"{participant}_{condition}"
 
         return participant, run_id, is_robot
 
@@ -353,37 +364,33 @@ def _(PROCESSED_DIR, data_files, mne, os, pl, preprocess, task_ids):
         return epochs
 
 
-    def epochs_to_wide(epochs):
+    def epochs_to_long(epochs):
         data = epochs.get_data()
+        times = epochs.times
         ch_names = epochs.ch_names
-        n_epochs, n_channels, n_times = data.shape
 
         meta_df = pl.from_pandas(epochs.metadata.reset_index(drop=True))
 
         rows = []
-        for i in range(n_epochs):
-            row = meta_df.row(i, named=True)
-            epoch_data = data[i]
+        for epoch_idx in range(data.shape[0]):
+            meta = meta_df.row(epoch_idx, named=True)
 
-            for ch_idx, ch in enumerate(ch_names):
-                ch_lower = ch.lower()
-                if "hbo" in ch_lower:
-                    prefix = "HbO"
-                elif "hbr" in ch_lower:
-                    prefix = "HbR"
-                else:
-                    prefix = "AUX"
+            for time_idx, time_sec in enumerate(times):
+                row = dict(meta)
+                row["time_index"] = time_idx
+                row["time_sec"] = float(time_sec)
 
-                safe_ch = ch.replace(" ", "_")
-                for t in range(n_times):
-                    row[f"{prefix}_{safe_ch}_t{t}"] = epoch_data[ch_idx, t]
+                for ch_idx, ch in enumerate(ch_names):
+                    safe_ch = ch.replace(" ", "_")
+                    row[safe_ch] = float(data[epoch_idx, ch_idx, time_idx])
 
-            rows.append(row)
+                rows.append(row)
 
         return pl.DataFrame(rows)
 
 
-    wide_dfs = []
+
+    long_dfs = []
     dataset_summary = []
 
     for dataset_key, paths in sorted(data_files.items()):
@@ -394,8 +401,8 @@ def _(PROCESSED_DIR, data_files, mne, os, pl, preprocess, task_ids):
             task_ids=task_ids,
         )
 
-        wide_df_dataset = epochs_to_wide(epochs)
-        wide_dfs.append(wide_df_dataset)
+        long_df_dataset = epochs_to_long(epochs)
+        long_dfs.append(long_df_dataset)
 
         md = epochs.metadata
         dataset_summary.append(
@@ -408,11 +415,11 @@ def _(PROCESSED_DIR, data_files, mne, os, pl, preprocess, task_ids):
             }
         )
 
-    wide_df = pl.concat(wide_dfs, how="diagonal")
+    long_df = pl.concat(long_dfs, how="diagonal")
 
     os.makedirs(PROCESSED_DIR, exist_ok=True)
-    export_path = f"{PROCESSED_DIR}/epochs_wide_with_metadata.csv"
-    wide_df.write_csv(export_path)
+    export_path = f"{PROCESSED_DIR}/combined_fnirs.csv"
+    long_df.write_csv(export_path)
 
     meta_cols = [
         "dataset_key",
@@ -427,17 +434,17 @@ def _(PROCESSED_DIR, data_files, mne, os, pl, preprocess, task_ids):
     ]
 
     print(f"Exported: {export_path}")
-    print(f"Rows: {wide_df.height}")
-    print(f"Columns: {wide_df.width}")
+    print(f"Rows: {long_df.height}")
+    print(f"Columns: {long_df.width}")
     print("Metadata columns:", meta_cols)
     print(pl.DataFrame(dataset_summary))
-    print(wide_df.select(meta_cols).head(10))
-    return (wide_df,)
+    print(long_df.select(meta_cols).head(10))
+    return (long_df,)
 
 
 @app.cell
-def _(wide_df):
-    wide_df
+def _(long_df):
+    long_df
     return
 
 
