@@ -219,7 +219,9 @@ def _(
     # No selection case
     if not fnirs_ch_selected:
         fnirs_ch_fig, _ax = plt.subplots(figsize=(14, 5))
-        _ax.text(0.5, 0.5, "No channels selected", ha="center", va="center", fontsize=14)
+        _ax.text(
+            0.5, 0.5, "No channels selected", ha="center", va="center", fontsize=14
+        )
         _ax.set_axis_off()
         plt.show()
 
@@ -237,7 +239,9 @@ def _(
             )
 
             if fnirs_ch_time is None:
-                fnirs_ch_time = _avg.filter(pl.col("is_robot") == True)["time_sec"].to_numpy()
+                fnirs_ch_time = _avg.filter(pl.col("is_robot") == True)[
+                    "time_sec"
+                ].to_numpy()
 
             _robot = _avg.filter(pl.col("is_robot") == True)["val"].to_numpy()
             _no_robot = _avg.filter(pl.col("is_robot") == False)["val"].to_numpy()
@@ -245,7 +249,9 @@ def _(
             if len(_robot) > fnirs_ch_SG_WIN:
                 _robot = savgol_filter(_robot, fnirs_ch_SG_WIN, fnirs_ch_SG_ORD)
             if len(_no_robot) > fnirs_ch_SG_WIN:
-                _no_robot = savgol_filter(_no_robot, fnirs_ch_SG_WIN, fnirs_ch_SG_ORD)
+                _no_robot = savgol_filter(
+                    _no_robot, fnirs_ch_SG_WIN, fnirs_ch_SG_ORD
+                )
 
             fnirs_ch_robot[_col] = _robot
             fnirs_ch_no_robot[_col] = _no_robot
@@ -269,13 +275,24 @@ def _(
 
             if "HbO" in _chroms:
                 _col = _chroms["HbO"]
-                fnirs_ch_ax1.plot(fnirs_ch_time, fnirs_ch_robot[_col], color=_c, linestyle="-")
-                fnirs_ch_ax2.plot(fnirs_ch_time, fnirs_ch_no_robot[_col], color=_c, linestyle="-")
+                fnirs_ch_ax1.plot(
+                    fnirs_ch_time, fnirs_ch_robot[_col], color=_c, linestyle="-"
+                )
+                fnirs_ch_ax2.plot(
+                    fnirs_ch_time, fnirs_ch_no_robot[_col], color=_c, linestyle="-"
+                )
 
             if "HbR" in _chroms:
                 _col = _chroms["HbR"]
-                fnirs_ch_ax1.plot(fnirs_ch_time, fnirs_ch_robot[_col], color=_c, linestyle="--")
-                fnirs_ch_ax2.plot(fnirs_ch_time, fnirs_ch_no_robot[_col], color=_c, linestyle="--")
+                fnirs_ch_ax1.plot(
+                    fnirs_ch_time, fnirs_ch_robot[_col], color=_c, linestyle="--"
+                )
+                fnirs_ch_ax2.plot(
+                    fnirs_ch_time,
+                    fnirs_ch_no_robot[_col],
+                    color=_c,
+                    linestyle="--",
+                )
 
         # Axes formatting
         fnirs_ch_ax1.set_title("Robot Trials")
@@ -287,6 +304,9 @@ def _(
         fnirs_ch_ax2.set_xlabel("Time (s)")
         fnirs_ch_ax2.set_ylabel("Concentration (μM)")
         fnirs_ch_ax2.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+
+        fnirs_ch_ax1.set_ylim(-1, 2)
+        fnirs_ch_ax2.set_ylim(-1, 2)
 
         # Legend handles
         from matplotlib.lines import Line2D
@@ -300,10 +320,11 @@ def _(
                 )
             if "HbR" in fnirs_ch_pairs[_pair]:
                 _legend_handles.append(
-                    Line2D([0], [0], color=_c, linestyle="--", label=f"{_pair} HbR")
+                    Line2D(
+                        [0], [0], color=_c, linestyle="--", label=f"{_pair} HbR"
+                    )
                 )
 
-        # ---- DYNAMIC LEGEND SIZING (THIS FIXES YOUR ISSUE) ----
         _n_actual = len(_legend_handles)
         _ncols_actual = min(_n_actual, 8)
         _n_legend_rows = (_n_actual + _ncols_actual - 1) // _ncols_actual
@@ -335,6 +356,11 @@ def _(
         )
 
         plt.show()
+    return
+
+
+@app.cell
+def _():
     return
 
 
