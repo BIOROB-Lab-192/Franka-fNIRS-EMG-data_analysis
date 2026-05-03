@@ -145,6 +145,51 @@ def _(df, pl, plt):
 
 
 @app.cell(hide_code=True)
+def _(df, mo, pl):
+    # fNIRS Overall Summary Stats
+    # Reuses: df, pl, mo from existing cells
+
+    _fnirs_ov_filtered = df.filter(
+        (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") <= 15.0)
+    )
+    _fnirs_ov_hbo = [c for c in df.columns if c.endswith("_hbo")]
+    _fnirs_ov_hbr = [c for c in df.columns if c.endswith("_hbr")]
+
+    _fnirs_ov_lines = []
+    for _rob, _cond in [(True, "Robot"), (False, "No-Robot")]:
+        _cdf = _fnirs_ov_filtered.filter(pl.col("is_robot") == _rob)
+        _runs = _cdf["run_id"].n_unique()
+        _parts = _cdf["participant"].n_unique()
+        _tasks = _cdf["task"].n_unique()
+        _ra = _cdf.with_columns(
+            [
+                pl.mean_horizontal(_fnirs_ov_hbo).alias("_hbo"),
+                pl.mean_horizontal(_fnirs_ov_hbr).alias("_hbr"),
+            ]
+        )
+        _hbo_m = _ra["_hbo"].mean() * 1e6
+        _hbo_x = _ra["_hbo"].max() * 1e6
+        _hbr_m = _ra["_hbr"].mean() * 1e6
+        _hbr_x = _ra["_hbr"].max() * 1e6
+        _fnirs_ov_lines.append(
+            f"| {_cond} | {_runs} | {_parts} | {_tasks} | {_hbo_m:.3f} | {_hbo_x:.3f} | {_hbr_m:.3f} | {_hbr_x:.3f} |"
+        )
+
+    _fnirs_ov_tbl = "| Condition | Runs | Participants | Tasks | HbO Mean (μM) | HbO Max (μM) | HbR Mean (μM) | HbR Max (μM) |\n"
+    _fnirs_ov_tbl += "|-----------|------|--------------|-------|---------------|--------------|---------------|--------------|\n"
+    _fnirs_ov_tbl += "\n".join(_fnirs_ov_lines)
+
+    mo.md(f"""
+    ### fNIRS Overall Summary
+
+    Global channel average across all tasks, participants, and time points (-5 to 15s).
+
+    {_fnirs_ov_tbl}
+    """)
+    return
+
+
+@app.cell(hide_code=True)
 def _(mo):
     # fNIRS Channel Selector Widget
     # Reuses: mo from imports cell
@@ -173,6 +218,47 @@ def _(mo):
     )
     fnirs_channel_selector
     return fnirs_channel_options, fnirs_channel_selector
+
+
+@app.cell(hide_code=True)
+def _(df, fnirs_channel_options, fnirs_channel_selector, mo, pl):
+    # fNIRS Channel Plot Summary Stats
+    # Reuses: df, pl, mo, fnirs_channel_selector, fnirs_channel_options from existing cells
+
+    _fnirs_ch_statsFiltered = df.filter(
+        (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") <= 15.0)
+    )
+
+    _fnirs_ch_lines = []
+    for _lbl in fnirs_channel_selector.value:
+        _col = fnirs_channel_options[_lbl]
+        _pair = _lbl.replace(" HbO", "").replace(" HbR", "")
+        _chrom = "HbO" if "HbO" in _lbl else "HbR"
+        for _rob, _cond in [(True, "Robot"), (False, "No-Robot")]:
+            _vals = (
+                _fnirs_ch_statsFiltered.filter(pl.col("is_robot") == _rob)[
+                    _col
+                ].to_numpy()
+                * 1e6
+            )
+            if len(_vals) == 0:
+                continue
+            _fnirs_ch_lines.append(
+                f"| {_pair} | {_chrom} | {_cond} | {_vals.mean():.3f} | {_vals.max():.3f} |"
+            )
+
+    _fnirs_ch_tbl = "| Channel | Chrom | Condition | Mean (μM) | Max (μM) |\n"
+    _fnirs_ch_tbl += "|---------|-------|-----------|-----------|----------|\n"
+    _fnirs_ch_tbl += "\n".join(_fnirs_ch_lines)
+
+    mo.md(f"""
+    ### fNIRS Per-Channel Summary
+
+    Mean and max concentration (μM) per source-detector channel, across all runs and time points.
+
+    {_fnirs_ch_tbl}
+    """)
+    return
 
 
 @app.cell
@@ -378,6 +464,53 @@ def _(df, mo):
     )
     fnirs_task_selector
     return (fnirs_task_selector,)
+
+
+@app.cell(hide_code=True)
+def _(df, fnirs_task_selector, mo, pl):
+    # fNIRS Task Plot Summary Stats
+    # Reuses: df, pl, mo, fnirs_task_selector from existing cells
+
+    _fnirs_task_statsFiltered = df.filter(
+        (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") <= 15.0)
+    )
+    _fnirs_task_hbo_cols_s = [c for c in df.columns if c.endswith("_hbo")]
+    _fnirs_task_hbr_cols_s = [c for c in df.columns if c.endswith("_hbr")]
+
+    _fnirs_task_lines = []
+    for _task in fnirs_task_selector.value:
+        _tdf = _fnirs_task_statsFiltered.filter(pl.col("task") == _task)
+        for _rob, _lbl in [(True, "Robot"), (False, "No-Robot")]:
+            _cdf = _tdf.filter(pl.col("is_robot") == _rob)
+            _runs = _cdf.select("run_id", "task_instance").unique().height
+            if _runs == 0:
+                continue
+            _ra = _cdf.with_columns(
+                [
+                    pl.mean_horizontal(_fnirs_task_hbo_cols_s).alias("_hbo"),
+                    pl.mean_horizontal(_fnirs_task_hbr_cols_s).alias("_hbr"),
+                ]
+            )
+            _hbo_m = _ra["_hbo"].mean() * 1e6
+            _hbo_x = _ra["_hbo"].max() * 1e6
+            _hbr_m = _ra["_hbr"].mean() * 1e6
+            _hbr_x = _ra["_hbr"].max() * 1e6
+            _fnirs_task_lines.append(
+                f"| {_task} | {_lbl} | {_runs} | {_hbo_m:.3f} | {_hbo_x:.3f} | {_hbr_m:.3f} | {_hbr_x:.3f} |"
+            )
+
+    _fnirs_task_tbl = "| Task | Condition | Runs | HbO Mean (μM) | HbO Max (μM) | HbR Mean (μM) | HbR Max (μM) |\n"
+    _fnirs_task_tbl += "|------|-----------|------|---------------|--------------|---------------|--------------|\n"
+    _fnirs_task_tbl += "\n".join(_fnirs_task_lines)
+
+    mo.md(f"""
+    ### fNIRS Per-Task Summary
+
+    Mean and max concentration (μM) of the global channel average, across all runs per task and condition.
+
+    {_fnirs_task_tbl}
+    """)
+    return
 
 
 @app.cell(hide_code=True)
