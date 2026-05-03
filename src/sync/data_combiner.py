@@ -132,6 +132,18 @@ def verify_epoch_alignment(
         if df.height > 0:
             print(f"  {name} time: [{df['time_sec'].min():.2f}, {df['time_sec'].max():.2f}]s")
 
+    # Per-run breakdown
+    all_runs = sorted(set(r for r, _ in emg_epochs | robot_epochs | fnirs_epochs))
+    print(f"\n  Per-run epoch counts:")
+    print(f"    {'run_id':<25} {'EMG':>5} {'Robot':>6} {'fNIRS':>6}")
+    print(f"    {'-'*25} {'-'*5} {'-'*6} {'-'*6}")
+    for run_id in all_runs:
+        e = sum(1 for r, _ in emg_epochs if r == run_id)
+        r = sum(1 for r, _ in robot_epochs if r == run_id)
+        f = sum(1 for r, _ in fnirs_epochs if r == run_id)
+        flag = "  ← MISMATCH" if r != e or f != e else ""
+        print(f"    {run_id:<25} {e:>5} {r:>6} {f:>6}{flag}")
+
     return {
         "emg_count": len(emg_epochs),
         "fnirs_count": len(fnirs_epochs),
@@ -338,7 +350,82 @@ def export_data_packet(
 
 
 # ═══════════════════════════════════════════════════════════════
-# 6. TOP-LEVEL
+# 6. POST-BUILD VERIFICATION
+# ═══════════════════════════════════════════════════════════════
+
+def verify_output(combined_path: str | Path, output_dir: str | Path) -> None:
+    """
+    Sanity-check the combined file and data packet after building.
+
+    Prints:
+      - Shape, column count, dtypes
+      - Per-epoch row count (expect 2001)
+      - Baseline vs task null pattern for each stream
+      - File sizes
+    """
+    import os
+
+    combined_path = Path(combined_path)
+    output_dir = Path(output_dir)
+
+    df = pl.read_parquet(combined_path)
+    print(f"Shape: {df.shape}")
+    print(f"Run IDs: {df['run_id'].n_unique()} unique, {df['task_instance'].n_unique()} task instances")
+
+    # Single epoch check
+    first_run = df["run_id"][0]
+    sample = df.filter((pl.col("run_id") == first_run) & (pl.col("task_instance") == 1))
+    print(f"\nEpoch check ({first_run}, task_instance=1):")
+    print(f"  Rows: {sample.shape[0]} (expect {N_POINTS})")
+    print(f"  time_sec: [{sample['time_sec'].min():.2f}, {sample['time_sec'].max():.2f}]")
+
+    # Baseline vs task nulls
+    baseline = sample.filter(pl.col("time_sec") < 0)
+    task = sample.filter(pl.col("time_sec") >= 0)
+
+    hbo = next((c for c in sample.columns if "_hbo" in c), None)
+    emg = next((c for c in sample.columns if "EMG" in c and "mV" in c), None)
+    rob = "timestamp" if "timestamp" in sample.columns else None
+
+    print(f"\nBaseline (-5 to 0s) [{baseline.shape[0]} rows]:")
+    if hbo:
+        print(f"  {hbo}: {baseline[hbo].null_count()} nulls")
+    if emg:
+        print(f"  {emg}: {baseline[emg].null_count()} nulls")
+    if rob:
+        print(f"  {rob}: {baseline[rob].null_count()} nulls")
+
+    print(f"Task (0 to 15s) [{task.shape[0]} rows]:")
+    if hbo:
+        print(f"  {hbo}: {task[hbo].null_count()} nulls")
+    if emg:
+        print(f"  {emg}: {task[emg].null_count()} nulls")
+    if rob:
+        print(f"  {rob}: {task[rob].null_count()} nulls")
+
+    # Overall null percentages
+    print(f"\nOverall null %:")
+    for group, col in [
+        ("fNIRS HbO", hbo),
+        ("EMG", emg),
+        ("Robot timestamp", rob),
+    ]:
+        if col and col in df.columns:
+            nulls = df[col].null_count()
+            print(f"  {group:20s}: {nulls}/{df.shape[0]} ({100*nulls/df.shape[0]:.1f}%)")
+
+    # File sizes
+    mb = combined_path.stat().st_size / 1e6
+    print(f"\n{combined_path.name}: {mb:.1f} MB")
+    dp = output_dir / "data_packet"
+    if dp.exists():
+        for f in sorted(dp.iterdir()):
+            sz = f.stat().st_size / 1e6
+            print(f"  {f.name}: {sz:.1f} MB")
+
+
+# ═══════════════════════════════════════════════════════════════
+# 7. TOP-LEVEL
 # ═══════════════════════════════════════════════════════════════
 
 def build_combined_export(
@@ -388,6 +475,10 @@ def build_combined_export(
     print("Exporting data packet...")
     export_data_packet(emg_df, robot_df, fnirs_df, output_dir / "data_packet")
 
+    # ── Verify ──
+    print("\nVerifying output...")
+    verify_output(combined_path, output_dir)
+
     print("\nDone!")
     return combined_100hz
 
@@ -418,6 +509,16 @@ if __name__ == "__main__":
         "--output", default="data/processed/combined",
         help="Output directory"
     )
+    parser.add_argument(
+        "--verify-only", action="store_true",
+        help="Skip building, just verify an existing combined file"
+    )
     args = parser.parse_args()
 
-    build_combined_export(args.emg, args.robot, args.fnirs, args.output)
+    if args.verify_only:
+        verify_output(
+            Path(args.output) / "combined_100hz.parquet",
+            Path(args.output),
+        )
+    else:
+        build_combined_export(args.emg, args.robot, args.fnirs, args.output)
