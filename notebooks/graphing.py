@@ -242,7 +242,8 @@ def _(fnirs_df, mo, pl):
         _runs = _cdf["run_id"].n_unique()
         _parts = _cdf["participant"].n_unique()
         _tasks = _cdf["task"].n_unique()
-        _ra = _cdf.with_columns(
+        _cdf_post = _cdf.filter(pl.col("time_sec") >= 0)
+        _ra = _cdf_post.with_columns(
             [
                 pl.mean_horizontal(_fnirs_ov_hbo).alias("_hbo"),
                 pl.mean_horizontal(_fnirs_ov_hbr).alias("_hbr"),
@@ -273,7 +274,7 @@ def _(fnirs_df, mo, pl):
     mo.md(f"""
     ### fNIRS Overall Summary
 
-    Global channel average across all tasks, participants, and time points (-5 to 15s).
+    Global channel average across all tasks, participants. Mean and max over 0\u201315s post-stimulus; baseline from \u22125 to 0s.
 
     {_fnirs_ov_tbl}
     """)
@@ -328,9 +329,9 @@ def _(fnirs_channel_options, fnirs_channel_selector, fnirs_df, mo, pl):
         _chrom = "HbO" if "HbO" in _lbl else "HbR"
         for _rob, _cond in [(True, "Robot"), (False, "No-Robot")]:
             _vals = (
-                _fnirs_ch_statsFiltered.filter(pl.col("is_robot") == _rob)[
-                    _col
-                ].to_numpy()
+                _fnirs_ch_statsFiltered.filter(
+                    (pl.col("is_robot") == _rob) & (pl.col("time_sec") >= 0)
+                )[_col].to_numpy()
                 * 1e6
             )
             if len(_vals) == 0:
@@ -514,6 +515,8 @@ def _(
         build_legend(fnirs_ch_fig, _legend_handles)
 
         plt.show()
+
+    fnirs_ch_fig
     return
 
 
@@ -554,7 +557,8 @@ def _(fnirs_df, fnirs_task_selector, mo, pl):
             _runs = _cdf.select("run_id", "task_instance").unique().height
             if _runs == 0:
                 continue
-            _ra = _cdf.with_columns(
+            _cdf_post = _cdf.filter(pl.col("time_sec") >= 0)
+            _ra = _cdf_post.with_columns(
                 [
                     pl.mean_horizontal(_fnirs_task_hbo_cols_s).alias("_hbo"),
                     pl.mean_horizontal(_fnirs_task_hbr_cols_s).alias("_hbr"),
@@ -754,6 +758,8 @@ def _(
         build_legend(fnirs_task_fig, _legend_handles)
 
         plt.show()
+
+    fnirs_task_fig
     return
 
 
@@ -830,6 +836,8 @@ def _(emg_baseline_switch, emg_df, pl, plt):
 
     plt.tight_layout()
     plt.show()
+
+    emg_ov_fig
     return
 
 
@@ -852,7 +860,10 @@ def _(emg_df, mo, pl):
         _runs = _cdf.select("run_id", "task_instance").unique().height
         _parts = _cdf["participant"].n_unique()
         _tasks = _cdf["task"].n_unique()
-        _ra = _cdf.with_columns(pl.mean_horizontal(emg_ov_emg_cols).alias("_emg"))
+        _cdf_post = _cdf.filter(pl.col("time_sec") >= 0)
+        _ra = _cdf_post.with_columns(
+            pl.mean_horizontal(emg_ov_emg_cols).alias("_emg")
+        )
         _emg_m = _ra["_emg"].mean()
         _emg_x = _ra["_emg"].max()
         # Baseline
@@ -872,7 +883,7 @@ def _(emg_df, mo, pl):
     mo.md(f"""
     ### EMG Overall Summary
 
-    Global sensor average across all tasks, participants, and time points (-5 to 15s).
+    Global sensor average across all tasks, participants. Mean and max over 0\u201315s post-stimulus; baseline from \u22125 to 0s.
 
     {emg_ov_tbl}
     """)
@@ -924,7 +935,9 @@ def _(emg_df, emg_sensor_options, emg_sensor_selector, mo, pl):
         _col = emg_sensor_options[_lbl]
         for _rob, _cond in [(True, "Robot"), (False, "No-Robot")]:
             _vals = (
-                emg_sens_statsFiltered.filter(pl.col("is_robot") == _rob)[_col]
+                emg_sens_statsFiltered.filter(
+                    (pl.col("is_robot") == _rob) & (pl.col("time_sec") >= 0)
+                )[_col]
                 .drop_nulls()
                 .to_numpy()
             )
@@ -951,7 +964,7 @@ def _(emg_df, emg_sensor_options, emg_sensor_selector, mo, pl):
     mo.md(f"""
     ### EMG Per-Sensor Summary
 
-    Mean and max EMG (mV) per sensor, across all runs and time points.
+    Mean and max EMG (mV) per sensor, across all runs (0\u201315s post-stimulus).
 
     {emg_sens_tbl}
     """)
@@ -1070,6 +1083,8 @@ def _(
         build_legend(emg_sens_fig, _legend_handles)
 
         plt.show()
+
+    emg_sens_fig
     return
 
 
@@ -1111,7 +1126,8 @@ def _(emg_df, emg_task_selector, mo, pl):
             _epochs = _cdf.select("run_id", "task_instance").unique().height
             if _epochs == 0:
                 continue
-            _ra = _cdf.with_columns(
+            _cdf_post = _cdf.filter(pl.col("time_sec") >= 0)
+            _ra = _cdf_post.with_columns(
                 pl.mean_horizontal(emg_task_emg_cols_s).alias("_emg")
             )
             _emg_m = _ra["_emg"].mean()
@@ -1133,7 +1149,7 @@ def _(emg_df, emg_task_selector, mo, pl):
     mo.md(f"""
     ### EMG Per-Task Summary
 
-    Mean and max EMG (mV) of the global sensor average, across all runs per task and condition.
+    Mean and max EMG (mV) of the global sensor average, across all runs per task and condition (0\u201315s post-stimulus).
 
     {emg_task_tbl}
     """)
@@ -1250,6 +1266,8 @@ def _(
         build_legend(emg_task_fig, _legend_handles)
 
         plt.show()
+
+    emg_task_fig
     return
 
 
@@ -1588,6 +1606,8 @@ def _(
 
             plt.tight_layout()
             plt.show()
+
+    _fig
     return pr_emg_cols, pr_emg_labels, pr_hbo_cols, pr_hbr_cols
 
 
