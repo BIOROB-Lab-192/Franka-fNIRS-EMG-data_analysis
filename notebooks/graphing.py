@@ -19,7 +19,7 @@ def _(pl):
     DATA_FILE = "./data/processed/combined/combined_100hz.parquet"
 
     df = pl.read_parquet(DATA_FILE)
-    df
+    df.schema
     return (df,)
 
 
@@ -364,8 +364,19 @@ def _(df, fnirs_channel_options, fnirs_channel_selector, mo, pl):
     return
 
 
-app._unparsable_cell(
-    r"""
+@app.cell(hide_code=True)
+def _(
+    Line2D,
+    build_legend,
+    df,
+    fnirs_baseline_switch,
+    fnirs_channel_options,
+    fnirs_channel_selector,
+    legend_layout,
+    pl,
+    plt,
+    savgol_filter,
+):
     # fNIRS Per-Channel Interactive Plot
     # Reuses: df, pl, plt, np, savgol_filter from existing cells
 
@@ -515,10 +526,8 @@ app._unparsable_cell(
         legend_layout(fnirs_ch_fig, len(_legend_handles))
         build_legend(fnirs_ch_fig, _legend_handles)
 
-            plt.show()
-    """,
-    column=None, disabled=False, hide_code=True, name="_"
-)
+        plt.show()
+    return
 
 
 @app.cell(hide_code=True)
@@ -985,8 +994,18 @@ def _(df, emg_sensor_options, emg_sensor_selector, mo, pl):
     return
 
 
-app._unparsable_cell(
-    r"""
+@app.cell(hide_code=True)
+def _(
+    Line2D,
+    build_legend,
+    df,
+    emg_baseline_switch,
+    emg_sensor_options,
+    emg_sensor_selector,
+    legend_layout,
+    pl,
+    plt,
+):
     # EMG Per-Sensor Interactive Plot
     # Reuses: df, pl, plt, np, Line2D from existing cells
 
@@ -1091,10 +1110,8 @@ app._unparsable_cell(
         legend_layout(emg_sens_fig, len(_legend_handles))
         build_legend(emg_sens_fig, _legend_handles)
 
-            plt.show()
-    """,
-    column=None, disabled=False, hide_code=True, name="_"
-)
+        plt.show()
+    return
 
 
 @app.cell(hide_code=True)
@@ -1274,6 +1291,182 @@ def _(
         build_legend(emg_task_fig, _legend_handles)
 
         plt.show()
+    return
+
+
+@app.cell(hide_code=True)
+def _(df, mo):
+    # Per-Run Viewer Widgets
+    # Reuses: mo, df from existing cells
+
+    pr_task_sorted = sorted(
+        df["task"].unique().to_list(), key=lambda _x: int(_x.split("_")[1])
+    )
+
+    pr_task_select = mo.ui.dropdown(options=pr_task_sorted, label="Task")
+
+    pr_robot_select = mo.ui.radio(
+        options=["Robot", "No-Robot"],
+        label="Condition",
+        value="Robot",
+    )
+
+    pr_run_select = mo.ui.dropdown(
+        options=sorted(df["run_id"].unique().to_list()), label="Run"
+    )
+
+    pr_baseline_switch = mo.ui.switch(label="Baseline correction (-5 to 0s)")
+
+    mo.md("### Per-Run Viewer")
+    mo.vstack([pr_task_select, pr_robot_select, pr_run_select, pr_baseline_switch])
+    return pr_baseline_switch, pr_robot_select, pr_run_select, pr_task_select
+
+
+@app.cell(hide_code=True)
+def _(
+    df,
+    np,
+    pl,
+    plt,
+    pr_baseline_switch,
+    pr_robot_select,
+    pr_run_select,
+    pr_task_select,
+    savgol_filter,
+):
+    # Per-Run Viewer Plot
+    # Reuses: df, pl, plt, np, savgol_filter from existing cells
+
+    pr_TIME_MIN = -5.0
+    pr_TIME_MAX = 15.0
+    pr_SG_WIN = 101
+    pr_SG_ORD = 3
+
+    pr_hbo_cols = [c for c in df.columns if c.endswith("_hbo")]
+    pr_hbr_cols = [c for c in df.columns if c.endswith("_hbr")]
+    pr_emg_cols = [c for c in df.columns if "EMG" in c and c.endswith("(mV)")]
+
+    # Clean EMG labels matching earlier per-sensor style
+    pr_emg_labels = []
+    for _c in pr_emg_cols:
+        _parts = _c.split(" | ")
+        _emg_ch = _parts[1].replace(" (mV)", "")
+        if "Duo" in _c:
+            _sensor_id = _parts[0].split("(")[1].strip(")")
+            pr_emg_labels.append(f"Duo ({_sensor_id}) {_emg_ch}")
+        else:
+            _sensor_id = _parts[0].split("(")[1].strip(")")
+            pr_emg_labels.append(f"Avanti ({_sensor_id}) {_emg_ch}")
+
+    if pr_run_select.value is None or pr_task_select.value is None:
+        pr_fig, _ax = plt.subplots(figsize=(14, 3))
+        _ax.text(
+            0.5,
+            0.5,
+            "Select a run and task to view",
+            ha="center",
+            va="center",
+            fontsize=14,
+        )
+        _ax.set_axis_off()
+        plt.show()
+    else:
+        _run_df = df.filter(
+            (pl.col("run_id") == pr_run_select.value)
+            & (pl.col("task") == pr_task_select.value)
+            & (pl.col("is_robot") == (pr_robot_select.value == "Robot"))
+            & (pl.col("time_sec") >= pr_TIME_MIN)
+            & (pl.col("time_sec") <= pr_TIME_MAX)
+        ).sort("time_sec")
+
+        if _run_df.height == 0:
+            pr_fig, _ax = plt.subplots(figsize=(14, 3))
+            _ax.text(
+                0.5,
+                0.5,
+                "No data matches this selection",
+                ha="center",
+                va="center",
+                fontsize=14,
+            )
+            _ax.set_axis_off()
+            plt.show()
+        else:
+            _time = _run_df["time_sec"].to_numpy()
+            _bl_mask = _time < 0
+
+            # === fNIRS ===
+            _hbo_raw = (
+                _run_df.select(pl.mean_horizontal(pr_hbo_cols))
+                .to_numpy()
+                .flatten()
+                * 1e6
+            )
+            _hbr_raw = (
+                _run_df.select(pl.mean_horizontal(pr_hbr_cols))
+                .to_numpy()
+                .flatten()
+                * 1e6
+            )
+
+            # Savitzky-Golay smoothing
+            _hbo = savgol_filter(_hbo_raw, pr_SG_WIN, pr_SG_ORD)
+            _hbr = savgol_filter(_hbr_raw, pr_SG_WIN, pr_SG_ORD)
+
+            if pr_baseline_switch.value:
+                _hbo -= np.nanmean(_hbo[_bl_mask])
+                _hbr -= np.nanmean(_hbr[_bl_mask])
+
+            # === EMG ===
+            _emg_data = {}
+            for _col in pr_emg_cols:
+                _raw = _run_df[_col].to_numpy().copy()
+                if pr_baseline_switch.value:
+                    _valid = ~np.isnan(_raw)
+                    _bl_vals = _raw[_valid & _bl_mask]
+                    if len(_bl_vals) > 0:
+                        _raw[_valid] -= _bl_vals.mean()
+                _emg_data[_col] = _raw
+
+            # === Figure ===
+            _n_emg = len(pr_emg_cols)
+            _fig, _axes = plt.subplots(
+                _n_emg + 1,
+                1,
+                figsize=(14, 2.5 * (_n_emg + 1)),
+                sharex=True,
+                gridspec_kw={"hspace": 0.15},
+            )
+
+            # fNIRS subplot — line chart
+            _axes[0].plot(_time, _hbo, label="HbO", color="red", linewidth=1)
+            _axes[0].plot(
+                _time, _hbr, label="HbR", color="blue", linewidth=1, linestyle="--"
+            )
+            _axes[0].set_ylabel("Concentration (μM)")
+            _axes[0].legend(loc="upper right", fontsize=8)
+            _axes[0].axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+            _cond = pr_robot_select.value
+            _axes[0].set_title(
+                f"fNIRS — {pr_run_select.value} — {pr_task_select.value} — {_cond}"
+            )
+
+            # EMG subplots — line charts with sensor labels
+            for i, (_col, _label) in enumerate(zip(pr_emg_cols, pr_emg_labels)):
+                _axes[i + 1].plot(
+                    _time,
+                    _emg_data[_col],
+                    label=_label,
+                    color=f"C{i}",
+                    linewidth=0.8,
+                )
+                _axes[i + 1].set_ylabel(f"{_label}\n(mV)", fontsize=8)
+                _axes[i + 1].axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+
+            _axes[-1].set_xlabel("Time (s)")
+
+            plt.tight_layout()
+            plt.show()
     return
 
 
