@@ -1332,31 +1332,24 @@ def _(
     pr_robot_select,
     pr_run_select,
     pr_task_select,
-    savgol_filter,
 ):
     # Per-Run Viewer Plot
-    # Reuses: df, pl, plt, np, savgol_filter from existing cells
+    # Reuses: df, pl, plt, np from existing cells
 
     pr_TIME_MIN = -5.0
     pr_TIME_MAX = 15.0
-    pr_SG_WIN = 101
-    pr_SG_ORD = 3
 
     pr_hbo_cols = [c for c in df.columns if c.endswith("_hbo")]
     pr_hbr_cols = [c for c in df.columns if c.endswith("_hbr")]
     pr_emg_cols = [c for c in df.columns if "EMG" in c and c.endswith("(mV)")]
 
-    # Clean EMG labels matching earlier per-sensor style
+    # EMG labels — full sensor names
     pr_emg_labels = []
     for _c in pr_emg_cols:
         _parts = _c.split(" | ")
-        _emg_ch = _parts[1].replace(" (mV)", "")
-        if "Duo" in _c:
-            _sensor_id = _parts[0].split("(")[1].strip(")")
-            pr_emg_labels.append(f"Duo ({_sensor_id}) {_emg_ch}")
-        else:
-            _sensor_id = _parts[0].split("(")[1].strip(")")
-            pr_emg_labels.append(f"Avanti ({_sensor_id}) {_emg_ch}")
+        _sensor_name = _parts[0]
+        _emg_ch = _parts[1].replace(" (mV)", "") if len(_parts) > 1 else _c
+        pr_emg_labels.append(f"{_sensor_name} {_emg_ch}")
 
     if pr_run_select.value is None or pr_task_select.value is None:
         pr_fig, _ax = plt.subplots(figsize=(14, 3))
@@ -1370,14 +1363,18 @@ def _(
         )
         _ax.set_axis_off()
         plt.show()
+
     else:
-        _run_df = df.filter(
-            (pl.col("run_id") == pr_run_select.value)
-            & (pl.col("task") == pr_task_select.value)
-            & (pl.col("is_robot") == (pr_robot_select.value == "Robot"))
-            & (pl.col("time_sec") >= pr_TIME_MIN)
-            & (pl.col("time_sec") <= pr_TIME_MAX)
-        ).sort("time_sec")
+        _run_df = (
+            df.filter(
+                (pl.col("run_id") == pr_run_select.value)
+                & (pl.col("task") == pr_task_select.value)
+                & (pl.col("is_robot") == (pr_robot_select.value == "Robot"))
+                & (pl.col("time_sec") >= pr_TIME_MIN)
+                & (pl.col("time_sec") <= pr_TIME_MAX)
+            )
+            .sort("time_sec")
+        )
 
         if _run_df.height == 0:
             pr_fig, _ax = plt.subplots(figsize=(14, 3))
@@ -1391,44 +1388,97 @@ def _(
             )
             _ax.set_axis_off()
             plt.show()
+
         else:
-            _time = _run_df["time_sec"].to_numpy()
-            _bl_mask = _time < 0
+            # ============================================================
+            # fNIRS
+            # Important fix:
+            # Collapse to ONE HbO/HbR value per time_sec before plotting.
+            # This prevents matplotlib from drawing vertical filled-looking
+            # blobs when the dataframe has duplicate timestamps.
+            # ============================================================
 
-            # === fNIRS ===
-            _hbo_raw = (
-                _run_df.select(pl.mean_horizontal(pr_hbo_cols))
-                .to_numpy()
-                .flatten()
-                * 1e6
-            )
-            _hbr_raw = (
-                _run_df.select(pl.mean_horizontal(pr_hbr_cols))
-                .to_numpy()
-                .flatten()
-                * 1e6
-            )
+            if len(pr_hbo_cols) == 0 or len(pr_hbr_cols) == 0:
+                _has_fnirs = False
+                _fnirs_time = np.array([])
+                _hbo = np.array([])
+                _hbr = np.array([])
+            else:
+                _has_fnirs = True
 
-            # Savitzky-Golay smoothing
-            _hbo = savgol_filter(_hbo_raw, pr_SG_WIN, pr_SG_ORD)
-            _hbr = savgol_filter(_hbr_raw, pr_SG_WIN, pr_SG_ORD)
+                _fnirs_df = (
+                    _run_df
+                    .with_columns(
+                        [
+                            pl.mean_horizontal(pr_hbo_cols).alias("HbO"),
+                            pl.mean_horizontal(pr_hbr_cols).alias("HbR"),
+                        ]
+                    )
+                    .group_by("time_sec")
+                    .agg(
+                        [
+                            pl.col("HbO").mean().alias("HbO"),
+                            pl.col("HbR").mean().alias("HbR"),
+                        ]
+                    )
+                    .sort("time_sec")
+                )
 
-            if pr_baseline_switch.value:
-                _hbo -= np.nanmean(_hbo[_bl_mask])
-                _hbr -= np.nanmean(_hbr[_bl_mask])
+                _fnirs_time = _fnirs_df["time_sec"].to_numpy()
+                _fnirs_bl = _fnirs_time < 0
 
-            # === EMG ===
+                # Convert to μM
+                _hbo = _fnirs_df["HbO"].to_numpy() * 1e6
+                _hbr = _fnirs_df["HbR"].to_numpy() * 1e6
+
+                # Optional baseline correction
+                if pr_baseline_switch.value:
+                    if np.any(_fnirs_bl):
+                        _hbo_bl = np.nanmean(_hbo[_fnirs_bl])
+                        _hbr_bl = np.nanmean(_hbr[_fnirs_bl])
+
+                        if not np.isnan(_hbo_bl):
+                            _hbo = _hbo - _hbo_bl
+                        if not np.isnan(_hbr_bl):
+                            _hbr = _hbr - _hbr_bl
+
+            # ============================================================
+            # EMG
+            # Keep EMG at native sampling rate.
+            # Only collapse duplicate timestamps per EMG channel if needed.
+            # ============================================================
+
             _emg_data = {}
+
             for _col in pr_emg_cols:
-                _raw = _run_df[_col].to_numpy().copy()
+                _emg_df = (
+                    _run_df
+                    .select(["time_sec", _col])
+                    .group_by("time_sec")
+                    .agg(pl.col(_col).mean().alias(_col))
+                    .sort("time_sec")
+                )
+
+                _time = _emg_df["time_sec"].to_numpy()
+                _raw = _emg_df[_col].to_numpy().copy()
+                _emg_bl = _time < 0
+
                 if pr_baseline_switch.value:
                     _valid = ~np.isnan(_raw)
-                    _bl_vals = _raw[_valid & _bl_mask]
-                    if len(_bl_vals) > 0:
-                        _raw[_valid] -= _bl_vals.mean()
-                _emg_data[_col] = _raw
+                    _bl_vals = _raw[_valid & _emg_bl]
 
-            # === Figure ===
+                    if len(_bl_vals) > 0:
+                        _raw[_valid] = _raw[_valid] - np.nanmean(_bl_vals)
+
+                _emg_data[_col] = {
+                    "time": _time,
+                    "data": _raw,
+                }
+
+            # ============================================================
+            # Figure
+            # ============================================================
+
             _n_emg = len(pr_emg_cols)
             _fig, _axes = plt.subplots(
                 _n_emg + 1,
@@ -1438,32 +1488,70 @@ def _(
                 gridspec_kw={"hspace": 0.15},
             )
 
-            # fNIRS subplot — line chart
-            _axes[0].plot(_time, _hbo, label="HbO", color="red", linewidth=1)
-            _axes[0].plot(
-                _time, _hbr, label="HbR", color="blue", linewidth=1, linestyle="--"
-            )
-            _axes[0].set_ylabel("Concentration (μM)")
-            _axes[0].legend(loc="upper right", fontsize=8)
+            # Make sure _axes is always list-like
+            if _n_emg == 0:
+                _axes = [_axes]
+
+            # ----------------------------
+            # fNIRS plot
+            # ----------------------------
+            if _has_fnirs and len(_fnirs_time) > 0:
+                # fNIRS
+                _axes[0].plot(
+                    _fnirs_time,
+                    np.convolve(_hbo, np.ones(100) / 100, mode="same"),
+                    label="HbO",
+                    color="red",
+                    linewidth=1.2,
+                )
+            
+                _axes[0].plot(
+                    _fnirs_time,
+                    np.convolve(_hbr, np.ones(100) / 100, mode="same"),
+                    label="HbR",
+                    color="blue",
+                    linewidth=1.2,
+                    )
+                _axes[0].set_ylabel("Concentration (μM)")
+                _axes[0].legend(loc="upper right", fontsize=8)
+            else:
+                _axes[0].text(
+                    0.5,
+                    0.5,
+                    "No fNIRS columns found",
+                    ha="center",
+                    va="center",
+                    transform=_axes[0].transAxes,
+                )
+                _axes[0].set_ylabel("fNIRS")
+
             _axes[0].axvline(x=0, color="gray", linestyle="--", alpha=0.5)
-            _cond = pr_robot_select.value
             _axes[0].set_title(
-                f"fNIRS — {pr_run_select.value} — {pr_task_select.value} — {_cond}"
+                f"fNIRS — {pr_run_select.value} — {pr_task_select.value} — {pr_robot_select.value}"
             )
 
-            # EMG subplots — line charts with sensor labels
+            # ----------------------------
+            # EMG plots
+            # ----------------------------
             for i, (_col, _label) in enumerate(zip(pr_emg_cols, pr_emg_labels)):
                 _axes[i + 1].plot(
-                    _time,
-                    _emg_data[_col],
-                    label=_label,
+                    _emg_data[_col]["time"],
+                    _emg_data[_col]["data"],
                     color=f"C{i}",
                     linewidth=0.8,
                 )
                 _axes[i + 1].set_ylabel(f"{_label}\n(mV)", fontsize=8)
-                _axes[i + 1].axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+                _axes[i + 1].axvline(
+                    x=0,
+                    color="gray",
+                    linestyle="--",
+                    alpha=0.5,
+                )
 
             _axes[-1].set_xlabel("Time (s)")
+
+            for _ax in _axes:
+                _ax.set_xlim(pr_TIME_MIN, pr_TIME_MAX)
 
             plt.tight_layout()
             plt.show()
