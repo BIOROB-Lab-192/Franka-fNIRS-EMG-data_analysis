@@ -19,7 +19,7 @@ def _():
 @app.cell
 def _(RAW_DIR, mo):
     import sys
-    sys.path.insert(0, "/Users/haider/code/data_analysis")
+    sys.path.insert(0, "/Users/haider/code/Franka-fNIRS-EMG-data_analysis")
     from src.loaders.loader import load_data
 
     data_files = load_data(RAW_DIR)
