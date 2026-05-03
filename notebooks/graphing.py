@@ -845,9 +845,11 @@ def _(df, emg_sensor_options, emg_sensor_selector, mo, pl):
     for _lbl in emg_sensor_selector.value:
         _col = emg_sensor_options[_lbl]
         for _rob, _cond in [(True, "Robot"), (False, "No-Robot")]:
-            _vals = emg_sens_statsFiltered.filter(pl.col("is_robot") == _rob)[
-                _col
-            ].to_numpy()
+            _vals = (
+                emg_sens_statsFiltered.filter(pl.col("is_robot") == _rob)[_col]
+                .drop_nulls()
+                .to_numpy()
+            )
             if len(_vals) == 0:
                 continue
             emg_sens_lines.append(
