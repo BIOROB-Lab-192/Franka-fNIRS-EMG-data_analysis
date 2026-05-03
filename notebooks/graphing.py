@@ -10,10 +10,8 @@ def _():
     import matplotlib.pyplot as plt
     import polars as pl
     import numpy as np
-    import json
-    import ast
 
-    return ast, mo, np, pl, plt
+    return mo, np, pl, plt
 
 
 @app.cell
@@ -26,7 +24,11 @@ def _(pl):
 
 
 @app.cell
-def _(ast, np):
+def _(np):
+    import json
+    import ast
+
+
     def unflattern_HT(flat):
         flat = ast.literal_eval(flat)
         T = np.array(flat).reshape(4, 4)
@@ -37,6 +39,64 @@ def _(ast, np):
 
 
 @app.cell(hide_code=True)
+def _(pl):
+    # Reusable helpers for all plots
+    # Reuses: pl, np from imports cell
+    import matplotlib.gridspec as gridspec
+    from matplotlib.lines import Line2D
+    from scipy.signal import savgol_filter
+
+
+    def apply_baseline(df, signal_cols, time_col="time_sec", baseline_end=0):
+        """Subtract per-run baseline (mean of time < baseline_end) from signal columns.
+        Returns a new DataFrame with baseline-corrected columns."""
+        _bl = (
+            df.filter(pl.col(time_col) < baseline_end)
+            .group_by("run_id")
+            .agg(
+                [
+                    pl.col(c).drop_nulls().mean().alias(f"{c}_bl")
+                    for c in signal_cols
+                ]
+            )
+        )
+        _result = df.join(_bl, on="run_id", how="left")
+        for c in signal_cols:
+            _result = _result.with_columns(
+                (pl.col(c) - pl.col(f"{c}_bl")).alias(c)
+            ).drop(f"{c}_bl")
+        return _result
+
+
+    def legend_layout(fig, n_handles, ncols=8):
+        """Apply standard legend-below layout with dynamic sizing."""
+        _n_rows = (n_handles + ncols - 1) // ncols
+        fig.set_size_inches(14, 5 + 0.35 * _n_rows)
+        _bottom = min(0.34, 0.12 + 0.045 * _n_rows)
+        fig.subplots_adjust(
+            left=0.06, right=0.99, top=0.93, bottom=_bottom, wspace=0.20
+        )
+
+
+    def build_legend(fig, handles, ncols=8, fontsize=9):
+        """Place legend below figure, centered."""
+        _nc = min(len(handles), ncols)
+        fig.legend(
+            handles=handles,
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.03),
+            ncol=_nc,
+            fontsize=fontsize,
+            frameon=False,
+            handlelength=2,
+            handletextpad=0.5,
+            columnspacing=1.5,
+        )
+
+    return Line2D, apply_baseline, build_legend, legend_layout, savgol_filter
+
+
+@app.cell(hide_code=True)
 def fnirs_baseline_switch(mo):
     fnirs_baseline_switch = mo.ui.switch(label="Baseline correction (-5 to 0s)")
     fnirs_baseline_switch
@@ -44,10 +104,9 @@ def fnirs_baseline_switch(mo):
 
 
 @app.cell(hide_code=True)
-def _(df, fnirs_baseline_switch, pl, plt):
+def _(df, fnirs_baseline_switch, pl, plt, savgol_filter):
     # fNIRS Aggregated: Robot vs No-Robot (Global Channel Average + Savitzky-Golay)
     # Reuses: df, pl, plt, np from existing cells
-    from scipy.signal import savgol_filter
 
     fnirs_TIME_MIN = -5.0
     fnirs_TIME_MAX = 15.0
@@ -162,7 +221,7 @@ def _(df, fnirs_baseline_switch, pl, plt):
 
     plt.tight_layout()
     fnirs_fig
-    return (savgol_filter,)
+    return
 
 
 @app.cell(hide_code=True)
@@ -305,21 +364,8 @@ def _(df, fnirs_channel_options, fnirs_channel_selector, mo, pl):
     return
 
 
-@app.cell
-def _():
-    return
-
-
-@app.cell(hide_code=True)
-def _(
-    df,
-    fnirs_baseline_switch,
-    fnirs_channel_options,
-    fnirs_channel_selector,
-    pl,
-    plt,
-    savgol_filter,
-):
+app._unparsable_cell(
+    r"""
     # fNIRS Per-Channel Interactive Plot
     # Reuses: df, pl, plt, np, savgol_filter from existing cells
 
@@ -453,9 +499,7 @@ def _(
         fnirs_ch_ax1.set_ylim(-1, 2)
         fnirs_ch_ax2.set_ylim(-1, 2)
 
-        # Legend handles
-        from matplotlib.lines import Line2D
-
+        # Legend
         _legend_handles = []
         for _pair in _pair_names:
             _c = fnirs_ch_pair_colors[_pair]
@@ -465,48 +509,16 @@ def _(
                 )
             if "HbR" in fnirs_ch_pairs[_pair]:
                 _legend_handles.append(
-                    Line2D(
-                        [0], [0], color=_c, linestyle="--", label=f"{_pair} HbR"
-                    )
+                    Line2D([0], [0], color=_c, linestyle="--", label=f"{_pair} HbR")
                 )
 
-        _n_actual = len(_legend_handles)
-        _ncols_actual = min(_n_actual, 8)
-        _n_legend_rows = (_n_actual + _ncols_actual - 1) // _ncols_actual
+        legend_layout(fnirs_ch_fig, len(_legend_handles))
+        build_legend(fnirs_ch_fig, _legend_handles)
 
-        # Grow figure ONLY when needed
-        fnirs_ch_fig.set_size_inches(14, 5 + 0.35 * _n_legend_rows)
-
-        # Adjust bottom spacing dynamically
-        _bottom = min(0.34, 0.12 + 0.045 * _n_legend_rows)
-
-        fnirs_ch_fig.legend(
-            handles=_legend_handles,
-            loc="lower center",
-            bbox_to_anchor=(0.5, 0.03),
-            ncol=_ncols_actual,
-            fontsize=9,
-            frameon=False,
-            handlelength=2,
-            handletextpad=0.5,
-            columnspacing=1.5,
-        )
-
-        fnirs_ch_fig.subplots_adjust(
-            left=0.06,
-            right=0.99,
-            top=0.93,
-            bottom=_bottom,
-            wspace=0.20,
-        )
-
-        plt.show()
-    return (Line2D,)
-
-
-@app.cell
-def _():
-    return
+            plt.show()
+    """,
+    column=None, disabled=False, hide_code=True, name="_"
+)
 
 
 @app.cell(hide_code=True)
@@ -587,9 +599,12 @@ def _(df, fnirs_task_selector, mo, pl):
 @app.cell(hide_code=True)
 def _(
     Line2D,
+    apply_baseline,
+    build_legend,
     df,
     fnirs_baseline_switch,
     fnirs_task_selector,
+    legend_layout,
     pl,
     plt,
     savgol_filter,
@@ -642,18 +657,9 @@ def _(
 
             # Baseline correction
             if fnirs_baseline_switch.value:
-                for _col in ["hbo_mean", "hbr_mean"]:
-                    _bl = (
-                        _task_run_avg.filter(pl.col("time_sec") < 0)
-                        .group_by("run_id")
-                        .agg(pl.col(_col).mean().alias("_base"))
-                    )
-                    _task_run_avg = (
-                        _task_run_avg.join(_bl, on="run_id", how="left")
-                        .with_columns((pl.col(_col) - pl.col("_base")).alias(_col))
-                        .drop("_base")
-                    )
-
+                _task_run_avg = apply_baseline(
+                    _task_run_avg, ["hbo_mean", "hbr_mean"]
+                )
             # Average across runs per condition per time point
             _task_avg = (
                 _task_run_avg.group_by("time_sec", "is_robot")
@@ -762,7 +768,7 @@ def _(
         fnirs_task_ax2.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
         fnirs_task_ax2.set_ylim(-1, 2)
 
-        # Legend handles
+        # Legend
         _legend_handles = []
         for _task in fnirs_task_selected:
             _c = fnirs_task_colors[_task]
@@ -773,35 +779,8 @@ def _(
                 Line2D([0], [0], color=_c, linestyle="--", label=f"{_task} HbR")
             )
 
-        _n_actual = len(_legend_handles)
-        _ncols_actual = min(_n_actual, 8)
-        _n_legend_rows = (_n_actual + _ncols_actual - 1) // _ncols_actual
-
-        # Grow figure ONLY when needed
-        fnirs_task_fig.set_size_inches(14, 5 + 0.35 * _n_legend_rows)
-
-        # Adjust bottom spacing dynamically
-        _bottom = min(0.34, 0.12 + 0.045 * _n_legend_rows)
-
-        fnirs_task_fig.legend(
-            handles=_legend_handles,
-            loc="lower center",
-            bbox_to_anchor=(0.5, 0.03),
-            ncol=_ncols_actual,
-            fontsize=9,
-            frameon=False,
-            handlelength=2,
-            handletextpad=0.5,
-            columnspacing=1.5,
-        )
-
-        fnirs_task_fig.subplots_adjust(
-            left=0.06,
-            right=0.99,
-            top=0.93,
-            bottom=_bottom,
-            wspace=0.20,
-        )
+        legend_layout(fnirs_task_fig, len(_legend_handles))
+        build_legend(fnirs_task_fig, _legend_handles)
 
         plt.show()
     return
@@ -1006,19 +985,10 @@ def _(df, emg_sensor_options, emg_sensor_selector, mo, pl):
     return
 
 
-@app.cell(hide_code=True)
-def _(
-    Line2D,
-    df,
-    emg_baseline_switch,
-    emg_sensor_options,
-    emg_sensor_selector,
-    pl,
-    plt,
-):
+app._unparsable_cell(
+    r"""
     # EMG Per-Sensor Interactive Plot
     # Reuses: df, pl, plt, np, Line2D from existing cells
-    import matplotlib.gridspec as gridspec
 
     emg_sens_TIME_MIN = -5.0
     emg_sens_TIME_MAX = 15.0
@@ -1109,42 +1079,22 @@ def _(
         emg_sens_ax2.set_ylabel("EMG (mV)")
         emg_sens_ax2.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
 
-        # Legend handles
+        # Legend
         _legend_handles = []
         for _lbl in emg_sensor_selector.value:
             _col = emg_sensor_options[_lbl]
             _c = emg_sens_colors[_col]
-            _legend_handles.append(Line2D([0], [0], color=_c, label=_lbl))
+            _legend_handles.append(
+                Line2D([0], [0], color=_c, label=_lbl)
+            )
 
-        _n_actual = len(_legend_handles)
-        _ncols_actual = min(_n_actual, 8)
-        _n_legend_rows = (_n_actual + _ncols_actual - 1) // _ncols_actual
+        legend_layout(emg_sens_fig, len(_legend_handles))
+        build_legend(emg_sens_fig, _legend_handles)
 
-        emg_sens_fig.set_size_inches(14, 5 + 0.35 * _n_legend_rows)
-        _bottom = min(0.34, 0.12 + 0.045 * _n_legend_rows)
-
-        emg_sens_fig.legend(
-            handles=_legend_handles,
-            loc="lower center",
-            bbox_to_anchor=(0.5, 0.03),
-            ncol=_ncols_actual,
-            fontsize=9,
-            frameon=False,
-            handlelength=2,
-            handletextpad=0.5,
-            columnspacing=1.5,
-        )
-
-        emg_sens_fig.subplots_adjust(
-            left=0.06,
-            right=0.99,
-            top=0.93,
-            bottom=_bottom,
-            wspace=0.20,
-        )
-
-        plt.show()
-    return
+            plt.show()
+    """,
+    column=None, disabled=False, hide_code=True, name="_"
+)
 
 
 @app.cell(hide_code=True)
@@ -1215,7 +1165,17 @@ def _(df, emg_task_selector, mo, pl):
 
 
 @app.cell(hide_code=True)
-def _(Line2D, df, emg_baseline_switch, emg_task_selector, pl, plt):
+def _(
+    Line2D,
+    apply_baseline,
+    build_legend,
+    df,
+    emg_baseline_switch,
+    emg_task_selector,
+    legend_layout,
+    pl,
+    plt,
+):
     # EMG Per-Task Interactive Plot
     # Reuses: df, pl, plt, np, Line2D from existing cells
 
@@ -1254,18 +1214,7 @@ def _(Line2D, df, emg_baseline_switch, emg_task_selector, pl, plt):
 
             # Baseline correction
             if emg_baseline_switch.value:
-                _bl = (
-                    _task_run_avg.filter(pl.col("time_sec") < 0)
-                    .group_by("run_id")
-                    .agg(pl.col("emg_mean").mean().alias("_base"))
-                )
-                _task_run_avg = (
-                    _task_run_avg.join(_bl, on="run_id", how="left")
-                    .with_columns(
-                        (pl.col("emg_mean") - pl.col("_base")).alias("emg_mean")
-                    )
-                    .drop("_base")
-                )
+                _task_run_avg = apply_baseline(_task_run_avg, ["emg_mean"])
 
             _task_avg = (
                 _task_run_avg.group_by("time_sec", "is_robot")
@@ -1315,38 +1264,14 @@ def _(Line2D, df, emg_baseline_switch, emg_task_selector, pl, plt):
         emg_task_ax2.set_ylabel("EMG (mV)")
         emg_task_ax2.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
 
-        # Legend handles
+        # Legend
         _legend_handles = []
         for _task in emg_task_selected:
             _c = emg_task_colors[_task]
             _legend_handles.append(Line2D([0], [0], color=_c, label=_task))
 
-        _n_actual = len(_legend_handles)
-        _ncols_actual = min(_n_actual, 8)
-        _n_legend_rows = (_n_actual + _ncols_actual - 1) // _ncols_actual
-
-        emg_task_fig.set_size_inches(14, 5 + 0.35 * _n_legend_rows)
-        _bottom = min(0.34, 0.12 + 0.045 * _n_legend_rows)
-
-        emg_task_fig.legend(
-            handles=_legend_handles,
-            loc="lower center",
-            bbox_to_anchor=(0.5, 0.03),
-            ncol=_ncols_actual,
-            fontsize=9,
-            frameon=False,
-            handlelength=2,
-            handletextpad=0.5,
-            columnspacing=1.5,
-        )
-
-        emg_task_fig.subplots_adjust(
-            left=0.06,
-            right=0.99,
-            top=0.93,
-            bottom=_bottom,
-            wspace=0.20,
-        )
+        legend_layout(emg_task_fig, len(_legend_handles))
+        build_legend(emg_task_fig, _legend_handles)
 
         plt.show()
     return
