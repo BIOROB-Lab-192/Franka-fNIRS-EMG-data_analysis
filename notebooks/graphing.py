@@ -714,5 +714,462 @@ def _(Line2D, df, fnirs_task_selector, pl, plt, savgol_filter):
     return
 
 
+@app.cell(hide_code=True)
+def _(df, pl, plt):
+    # EMG Aggregated: Robot vs No-Robot (Global Sensor Average)
+    # Reuses: df, pl, plt, np from existing cells
+
+    emg_ov_TIME_MIN = -5.0
+    emg_ov_TIME_MAX = 15.0
+
+    emg_ov_cols = [c for c in df.columns if "EMG" in c and c.endswith("(mV)")]
+
+    emg_ov_filtered = df.filter(
+        (pl.col("time_sec") >= emg_ov_TIME_MIN)
+        & (pl.col("time_sec") <= emg_ov_TIME_MAX)
+    )
+
+    emg_ov_run_avg = emg_ov_filtered.with_columns(
+        pl.mean_horizontal(emg_ov_cols).alias("emg_mean")
+    )
+
+    emg_ov_avg = (
+        emg_ov_run_avg.group_by("time_sec", "is_robot")
+        .agg(pl.col("emg_mean").mean().alias("emg"))
+        .sort("time_sec")
+    )
+
+    emg_ov_robot = emg_ov_avg.filter(pl.col("is_robot") == True)
+    emg_ov_no_robot = emg_ov_avg.filter(pl.col("is_robot") == False)
+
+    emg_ov_fig, (emg_ov_ax1, emg_ov_ax2) = plt.subplots(1, 2, figsize=(14, 5))
+
+    emg_ov_ax1.plot(
+        emg_ov_robot["time_sec"], emg_ov_robot["emg"], color="tab:blue"
+    )
+    emg_ov_ax1.set_title("Robot Trials")
+    emg_ov_ax1.set_xlabel("Time (s)")
+    emg_ov_ax1.set_ylabel("EMG (mV)")
+    emg_ov_ax1.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+
+    emg_ov_ax2.plot(
+        emg_ov_no_robot["time_sec"], emg_ov_no_robot["emg"], color="tab:orange"
+    )
+    emg_ov_ax2.set_title("No-Robot Trials")
+    emg_ov_ax2.set_xlabel("Time (s)")
+    emg_ov_ax2.set_ylabel("EMG (mV)")
+    emg_ov_ax2.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+
+    plt.tight_layout()
+    plt.show()
+    return
+
+
+@app.cell(hide_code=True)
+def _(df, mo, pl):
+    # EMG Overall Summary Stats
+    # Reuses: df, pl, mo from existing cells
+
+    emg_ov_statsFiltered = df.filter(
+        (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") <= 15.0)
+    )
+    emg_ov_emg_cols = [c for c in df.columns if "EMG" in c and c.endswith("(mV)")]
+
+    emg_ov_lines = []
+    for _rob, _cond in [(True, "Robot"), (False, "No-Robot")]:
+        _cdf = emg_ov_statsFiltered.filter(pl.col("is_robot") == _rob)
+        _runs = _cdf.select("run_id", "task_instance").unique().height
+        _parts = _cdf["participant"].n_unique()
+        _tasks = _cdf["task"].n_unique()
+        _ra = _cdf.with_columns(pl.mean_horizontal(emg_ov_emg_cols).alias("_emg"))
+        _emg_m = _ra["_emg"].mean()
+        _emg_x = _ra["_emg"].max()
+        emg_ov_lines.append(
+            f"| {_cond} | {_runs} | {_parts} | {_tasks} | {_emg_m:.4f} | {_emg_x:.4f} |"
+        )
+
+    emg_ov_tbl = "| Condition | Epochs | Participants | Tasks | EMG Mean (mV) | EMG Max (mV) |\n"
+    emg_ov_tbl += "|-----------|--------|--------------|-------|---------------|--------------|\n"
+    emg_ov_tbl += "\n".join(emg_ov_lines)
+
+    mo.md(f"""
+    ### EMG Overall Summary
+
+    Global sensor average across all tasks, participants, and time points (-5 to 15s).
+
+    {emg_ov_tbl}
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(df, mo):
+    # EMG Sensor Selector Widget
+    # Reuses: mo, df from existing cells
+
+    emg_sensor_options = {}
+    for _c in df.columns:
+        if "EMG" in _c and _c.endswith("(mV)"):
+            # Clean label: "Avanti 1 (82703)" or "Duo 3 EMG1 (78042)"
+            _parts = _c.split(" | ")
+            _sensor_full = _parts[0]  # "Avanti Sensor 1 (82703)"
+            _emg_ch = _parts[1].replace(" (mV)", "")  # "EMG 1" or "EMG 2"
+            # Extract short sensor name
+            _words = _sensor_full.split()
+            _short = f"{_words[0]} {_words[2]} ({_words[3].strip('()')})"
+            if "Duo" in _sensor_full:
+                _label = f"{_short} {_emg_ch}"
+            else:
+                _label = _short
+            emg_sensor_options[_label] = _c
+
+    emg_sensor_selector = mo.ui.multiselect(
+        options=list(emg_sensor_options.keys()),
+        value=list(emg_sensor_options.keys()),
+        label="Select EMG sensors",
+    )
+    emg_sensor_selector
+    return emg_sensor_options, emg_sensor_selector
+
+
+@app.cell(hide_code=True)
+def _(df, emg_sensor_options, emg_sensor_selector, mo, pl):
+    # EMG Sensor Plot Summary Stats
+    # Reuses: df, pl, mo, emg_sensor_selector, emg_sensor_options from existing cells
+
+    emg_sens_statsFiltered = df.filter(
+        (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") <= 15.0)
+    )
+
+    emg_sens_lines = []
+    for _lbl in emg_sensor_selector.value:
+        _col = emg_sensor_options[_lbl]
+        for _rob, _cond in [(True, "Robot"), (False, "No-Robot")]:
+            _vals = emg_sens_statsFiltered.filter(pl.col("is_robot") == _rob)[
+                _col
+            ].to_numpy()
+            if len(_vals) == 0:
+                continue
+            emg_sens_lines.append(
+                f"| {_lbl} | {_cond} | {_vals.mean():.4f} | {_vals.max():.4f} |"
+            )
+
+    emg_sens_tbl = "| Sensor | Condition | Mean (mV) | Max (mV) |\n"
+    emg_sens_tbl += "|--------|-----------|-----------|----------|\n"
+    emg_sens_tbl += "\n".join(emg_sens_lines)
+
+    mo.md(f"""
+    ### EMG Per-Sensor Summary
+
+    Mean and max EMG (mV) per sensor, across all runs and time points.
+
+    {emg_sens_tbl}
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(Line2D, df, emg_sensor_options, emg_sensor_selector, pl, plt):
+    # EMG Per-Sensor Interactive Plot
+    # Reuses: df, pl, plt, np, Line2D from existing cells
+    import matplotlib.gridspec as gridspec
+
+    emg_sens_TIME_MIN = -5.0
+    emg_sens_TIME_MAX = 15.0
+
+    emg_sens_filtered = df.filter(
+        (pl.col("time_sec") >= emg_sens_TIME_MIN)
+        & (pl.col("time_sec") <= emg_sens_TIME_MAX)
+    )
+
+    emg_sens_selected = [
+        emg_sensor_options[_ch] for _ch in emg_sensor_selector.value
+    ]
+
+    if not emg_sens_selected:
+        emg_sens_fig, _ax = plt.subplots(figsize=(14, 5))
+        _ax.text(
+            0.5, 0.5, "No sensors selected", ha="center", va="center", fontsize=14
+        )
+        _ax.set_axis_off()
+        plt.show()
+    else:
+        emg_sens_time = None
+        emg_sens_robot = {}
+        emg_sens_no_robot = {}
+
+        for _col in emg_sens_selected:
+            _avg = (
+                emg_sens_filtered.group_by("time_sec", "is_robot")
+                .agg(pl.col(_col).mean().alias("val"))
+                .sort("time_sec")
+            )
+
+            if emg_sens_time is None:
+                emg_sens_time = _avg.filter(pl.col("is_robot") == True)[
+                    "time_sec"
+                ].to_numpy()
+
+            emg_sens_robot[_col] = _avg.filter(pl.col("is_robot") == True)[
+                "val"
+            ].to_numpy()
+            emg_sens_no_robot[_col] = _avg.filter(pl.col("is_robot") == False)[
+                "val"
+            ].to_numpy()
+
+        # One unique color per sensor
+        _n_sens = len(emg_sens_selected)
+        _cmap = plt.cm.tab10 if _n_sens <= 10 else plt.cm.tab20
+        emg_sens_colors = {
+            _c: _cmap(_i / max(_n_sens - 1, 1))
+            for _i, _c in enumerate(emg_sens_selected)
+        }
+
+        emg_sens_fig, (emg_sens_ax1, emg_sens_ax2) = plt.subplots(
+            1, 2, figsize=(14, 5)
+        )
+
+        for _lbl in emg_sensor_selector.value:
+            _col = emg_sensor_options[_lbl]
+            _c = emg_sens_colors[_col]
+            emg_sens_ax1.plot(
+                emg_sens_time, emg_sens_robot[_col], color=_c, label=_lbl
+            )
+            emg_sens_ax2.plot(
+                emg_sens_time, emg_sens_no_robot[_col], color=_c, label=_lbl
+            )
+
+        emg_sens_ax1.set_title("Robot Trials")
+        emg_sens_ax1.set_xlabel("Time (s)")
+        emg_sens_ax1.set_ylabel("EMG (mV)")
+        emg_sens_ax1.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+
+        emg_sens_ax2.set_title("No-Robot Trials")
+        emg_sens_ax2.set_xlabel("Time (s)")
+        emg_sens_ax2.set_ylabel("EMG (mV)")
+        emg_sens_ax2.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+
+        # Legend handles
+        _legend_handles = []
+        for _lbl in emg_sensor_selector.value:
+            _col = emg_sensor_options[_lbl]
+            _c = emg_sens_colors[_col]
+            _legend_handles.append(Line2D([0], [0], color=_c, label=_lbl))
+
+        _n_actual = len(_legend_handles)
+        _ncols_actual = min(_n_actual, 8)
+        _n_legend_rows = (_n_actual + _ncols_actual - 1) // _ncols_actual
+
+        emg_sens_fig.set_size_inches(14, 5 + 0.35 * _n_legend_rows)
+        _bottom = min(0.34, 0.12 + 0.045 * _n_legend_rows)
+
+        emg_sens_fig.legend(
+            handles=_legend_handles,
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.03),
+            ncol=_ncols_actual,
+            fontsize=9,
+            frameon=False,
+            handlelength=2,
+            handletextpad=0.5,
+            columnspacing=1.5,
+        )
+
+        emg_sens_fig.subplots_adjust(
+            left=0.06,
+            right=0.99,
+            top=0.93,
+            bottom=_bottom,
+            wspace=0.20,
+        )
+
+        plt.show()
+    return
+
+
+@app.cell(hide_code=True)
+def _(df, mo):
+    # EMG Task Selector Widget
+    # Reuses: mo, df from existing cells
+
+    _emg_task_sorted = sorted(
+        df["task"].unique().to_list(), key=lambda _x: int(_x.split("_")[1])
+    )
+
+    emg_task_selector = mo.ui.multiselect(
+        options=_emg_task_sorted, value=_emg_task_sorted, label="Select tasks"
+    )
+    emg_task_selector
+    return (emg_task_selector,)
+
+
+@app.cell(hide_code=True)
+def _(df, emg_task_selector, mo, pl):
+    # EMG Task Plot Summary Stats
+    # Reuses: df, pl, mo, emg_task_selector from existing cells
+
+    emg_task_statsFiltered = df.filter(
+        (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") <= 15.0)
+    )
+    emg_task_emg_cols_s = [
+        c for c in df.columns if "EMG" in c and c.endswith("(mV)")
+    ]
+
+    emg_task_lines = []
+    for _task in emg_task_selector.value:
+        _tdf = emg_task_statsFiltered.filter(pl.col("task") == _task)
+        for _rob, _lbl in [(True, "Robot"), (False, "No-Robot")]:
+            _cdf = _tdf.filter(pl.col("is_robot") == _rob)
+            _epochs = _cdf.select("run_id", "task_instance").unique().height
+            if _epochs == 0:
+                continue
+            _ra = _cdf.with_columns(
+                pl.mean_horizontal(emg_task_emg_cols_s).alias("_emg")
+            )
+            _emg_m = _ra["_emg"].mean()
+            _emg_x = _ra["_emg"].max()
+            emg_task_lines.append(
+                f"| {_task} | {_lbl} | {_epochs} | {_emg_m:.4f} | {_emg_x:.4f} |"
+            )
+
+    emg_task_tbl = "| Task | Condition | Epochs | EMG Mean (mV) | EMG Max (mV) |\n"
+    emg_task_tbl += (
+        "|------|-----------|--------|---------------|--------------|\n"
+    )
+    emg_task_tbl += "\n".join(emg_task_lines)
+
+    mo.md(f"""
+    ### EMG Per-Task Summary
+
+    Mean and max EMG (mV) of the global sensor average, across all runs per task and condition.
+
+    {emg_task_tbl}
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(Line2D, df, emg_task_selector, pl, plt):
+    # EMG Per-Task Interactive Plot
+    # Reuses: df, pl, plt, np, Line2D from existing cells
+
+    emg_task_TIME_MIN = -5.0
+    emg_task_TIME_MAX = 15.0
+
+    emg_task_filtered = df.filter(
+        (pl.col("time_sec") >= emg_task_TIME_MIN)
+        & (pl.col("time_sec") <= emg_task_TIME_MAX)
+    )
+
+    emg_task_emg_cols = [
+        c for c in df.columns if "EMG" in c and c.endswith("(mV)")
+    ]
+
+    emg_task_selected = emg_task_selector.value
+
+    if not emg_task_selected:
+        emg_task_fig, _ax = plt.subplots(figsize=(14, 5))
+        _ax.text(
+            0.5, 0.5, "No tasks selected", ha="center", va="center", fontsize=14
+        )
+        _ax.set_axis_off()
+        plt.show()
+    else:
+        emg_task_time = None
+        emg_task_robot = {}
+        emg_task_no_robot = {}
+
+        for _task in emg_task_selected:
+            _task_df = emg_task_filtered.filter(pl.col("task") == _task)
+
+            _task_run_avg = _task_df.with_columns(
+                pl.mean_horizontal(emg_task_emg_cols).alias("emg_mean")
+            )
+
+            _task_avg = (
+                _task_run_avg.group_by("time_sec", "is_robot")
+                .agg(pl.col("emg_mean").mean().alias("emg"))
+                .sort("time_sec")
+            )
+
+            if emg_task_time is None:
+                emg_task_time = _task_avg.filter(pl.col("is_robot") == True)[
+                    "time_sec"
+                ].to_numpy()
+
+            emg_task_robot[_task] = _task_avg.filter(pl.col("is_robot") == True)[
+                "emg"
+            ].to_numpy()
+            emg_task_no_robot[_task] = _task_avg.filter(
+                pl.col("is_robot") == False
+            )["emg"].to_numpy()
+
+        _n_tasks = len(emg_task_selected)
+        _cmap = plt.cm.tab10 if _n_tasks <= 10 else plt.cm.tab20
+        emg_task_colors = {
+            _t: _cmap(_i / max(_n_tasks - 1, 1))
+            for _i, _t in enumerate(emg_task_selected)
+        }
+
+        emg_task_fig, (emg_task_ax1, emg_task_ax2) = plt.subplots(
+            1, 2, figsize=(14, 5)
+        )
+
+        for _task in emg_task_selected:
+            _c = emg_task_colors[_task]
+            emg_task_ax1.plot(
+                emg_task_time, emg_task_robot[_task], color=_c, label=_task
+            )
+            emg_task_ax2.plot(
+                emg_task_time, emg_task_no_robot[_task], color=_c, label=_task
+            )
+
+        emg_task_ax1.set_title("Robot Trials")
+        emg_task_ax1.set_xlabel("Time (s)")
+        emg_task_ax1.set_ylabel("EMG (mV)")
+        emg_task_ax1.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+
+        emg_task_ax2.set_title("No-Robot Trials")
+        emg_task_ax2.set_xlabel("Time (s)")
+        emg_task_ax2.set_ylabel("EMG (mV)")
+        emg_task_ax2.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+
+        # Legend handles
+        _legend_handles = []
+        for _task in emg_task_selected:
+            _c = emg_task_colors[_task]
+            _legend_handles.append(Line2D([0], [0], color=_c, label=_task))
+
+        _n_actual = len(_legend_handles)
+        _ncols_actual = min(_n_actual, 8)
+        _n_legend_rows = (_n_actual + _ncols_actual - 1) // _ncols_actual
+
+        emg_task_fig.set_size_inches(14, 5 + 0.35 * _n_legend_rows)
+        _bottom = min(0.34, 0.12 + 0.045 * _n_legend_rows)
+
+        emg_task_fig.legend(
+            handles=_legend_handles,
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.03),
+            ncol=_ncols_actual,
+            fontsize=9,
+            frameon=False,
+            handlelength=2,
+            handletextpad=0.5,
+            columnspacing=1.5,
+        )
+
+        emg_task_fig.subplots_adjust(
+            left=0.06,
+            right=0.99,
+            top=0.93,
+            bottom=_bottom,
+            wspace=0.20,
+        )
+
+        plt.show()
+    return
+
+
 if __name__ == "__main__":
     app.run()
