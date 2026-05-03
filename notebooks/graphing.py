@@ -199,13 +199,22 @@ def _(
         & (pl.col("time_sec") <= fnirs_ch_TIME_MAX)
     )
 
-    # Get selected channels
+    # Get selected channels, grouped by source-detector pair
     fnirs_ch_selected = [
         fnirs_channel_options[_ch] for _ch in fnirs_channel_selector.value
     ]
 
+    # Build pair → {HbO: col, HbR: col} mapping
+    fnirs_ch_pairs = {}
+    for _lbl in fnirs_channel_selector.value:
+        _pair = _lbl.replace(" HbO", "").replace(" HbR", "")
+        _chrom = "HbO" if "HbO" in _lbl else "HbR"
+        if _pair not in fnirs_ch_pairs:
+            fnirs_ch_pairs[_pair] = {}
+        fnirs_ch_pairs[_pair][_chrom] = fnirs_channel_options[_lbl]
+
     if not fnirs_ch_selected:
-        fnirs_ch_fig, _ax = plt.subplots(figsize=(7, 5))
+        fnirs_ch_fig, _ax = plt.subplots(figsize=(14, 5))
         _ax.text(
             0.5, 0.5, "No channels selected", ha="center", va="center", fontsize=14
         )
@@ -247,41 +256,42 @@ def _(
             fnirs_ch_robot[_col] = _robot
             fnirs_ch_no_robot[_col] = _no_robot
 
-        # Color scheme: warm for HbO, cool for HbR
-        _hbo_labels = [_l for _l in fnirs_channel_selector.value if "HbO" in _l]
-        _hbr_labels = [_l for _l in fnirs_channel_selector.value if "HbR" in _l]
-        fnirs_ch_colors = {}
-        for _i, _lbl in enumerate(_hbo_labels):
-            fnirs_ch_colors[_lbl] = plt.cm.Reds(
-                0.3 + 0.6 * _i / max(len(_hbo_labels) - 1, 1)
-            )
-        for _i, _lbl in enumerate(_hbr_labels):
-            fnirs_ch_colors[_lbl] = plt.cm.Blues(
-                0.3 + 0.6 * _i / max(len(_hbr_labels) - 1, 1)
-            )
+        # Color: one unique color per source-detector pair
+        _pair_names = sorted(fnirs_ch_pairs.keys())
+        _cmap = plt.cm.tab10 if len(_pair_names) <= 10 else plt.cm.tab20
+        fnirs_ch_pair_colors = {
+            _p: _cmap(_i / max(len(_pair_names) - 1, 1))
+            for _i, _p in enumerate(_pair_names)
+        }
 
-        # Plot — two subplots side by side, legend below
-        _n_ch = len(fnirs_channel_selector.value)
-        _ncols_legend = min(4, _n_ch)
-        _legend_rows = (_n_ch + _ncols_legend - 1) // _ncols_legend
-        _bottom_margin = 0.04 + 0.06 * _legend_rows
-
+        # Plot
         fnirs_ch_fig, (fnirs_ch_ax1, fnirs_ch_ax2) = plt.subplots(
-            1,
-            2,
-            figsize=(14, 5),
+            1, 2, figsize=(14, 5)
         )
-        fnirs_ch_fig.subplots_adjust(bottom=_bottom_margin, top=0.92)
 
-        for _lbl in fnirs_channel_selector.value:
-            _col = fnirs_channel_options[_lbl]
-            _c = fnirs_ch_colors[_lbl]
-            fnirs_ch_ax1.plot(
-                fnirs_ch_time, fnirs_ch_robot[_col], label=_lbl, color=_c
-            )
-            fnirs_ch_ax2.plot(
-                fnirs_ch_time, fnirs_ch_no_robot[_col], label=_lbl, color=_c
-            )
+        for _pair, _chroms in fnirs_ch_pairs.items():
+            _c = fnirs_ch_pair_colors[_pair]
+
+            if "HbO" in _chroms:
+                _col = _chroms["HbO"]
+                fnirs_ch_ax1.plot(
+                    fnirs_ch_time, fnirs_ch_robot[_col], color=_c, linestyle="-"
+                )
+                fnirs_ch_ax2.plot(
+                    fnirs_ch_time, fnirs_ch_no_robot[_col], color=_c, linestyle="-"
+                )
+
+            if "HbR" in _chroms:
+                _col = _chroms["HbR"]
+                fnirs_ch_ax1.plot(
+                    fnirs_ch_time, fnirs_ch_robot[_col], color=_c, linestyle="--"
+                )
+                fnirs_ch_ax2.plot(
+                    fnirs_ch_time,
+                    fnirs_ch_no_robot[_col],
+                    color=_c,
+                    linestyle="--",
+                )
 
         fnirs_ch_ax1.set_title("Robot Trials")
         fnirs_ch_ax1.set_xlabel("Time (s)")
@@ -293,14 +303,41 @@ def _(
         fnirs_ch_ax2.set_ylabel("Concentration (μM)")
         fnirs_ch_ax2.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
 
-        # Shared legend below the figure
+        # Build legend handles
+        from matplotlib.lines import Line2D
+
+        _legend_handles = []
+        for _pair in _pair_names:
+            _c = fnirs_ch_pair_colors[_pair]
+            if "HbO" in fnirs_ch_pairs[_pair]:
+                _legend_handles.append(
+                    Line2D([0], [0], color=_c, linestyle="-", label=f"{_pair} HbO")
+                )
+            if "HbR" in fnirs_ch_pairs[_pair]:
+                _legend_handles.append(
+                    Line2D(
+                        [0], [0], color=_c, linestyle="--", label=f"{_pair} HbR"
+                    )
+                )
+
+        # Place legend: full width below plots, wraps naturally
+        _n_handles = len(_legend_handles)
+        # Use enough columns to fill the width; matplotlib wraps if needed
+        _ncols = min(_n_handles, 8)
+
         fnirs_ch_fig.legend(
-            loc="lower center",
+            handles=_legend_handles,
+            loc="upper center",
             bbox_to_anchor=(0.5, 0.0),
-            ncol=_ncols_legend,
+            ncol=_ncols,
             fontsize=7,
             frameon=False,
+            borderaxespad=0,
         )
+
+        # Reserve space below plots for legend — roughly 0.07 per row
+        _n_rows = (_n_handles + _ncols - 1) // _ncols
+        fnirs_ch_fig.subplots_adjust(bottom=0.05 + 0.07 * _n_rows)
 
         plt.show()
     return
