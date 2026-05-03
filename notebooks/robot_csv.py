@@ -303,7 +303,7 @@ def _(pl, robot_df):
         robot_df
         .filter(
             (pl.col("sequence_start_timestamp").is_not_null()) &
-            ((pl.col("timestamp") - pl.col("sequence_start_timestamp")) >= 0) &
+            ((pl.col("timestamp") - pl.col("sequence_start_timestamp")) >= -5.0) &
             ((pl.col("timestamp") - pl.col("sequence_start_timestamp")) < 15.0)
         )
     )

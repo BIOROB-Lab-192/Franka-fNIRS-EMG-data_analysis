@@ -295,25 +295,25 @@ def _(pl):
     def generate_epochs(cleaned, marker_df, epoch_duration=40.0, total_markers=30):
         """
         Generate evenly-spaced epoch markers starting from the first marker.
-    
+
         Args:
             cleaned: cleaned dataframe with 'time' column
             marker_df: marker dataframe from load_trigno_csv
             epoch_duration: seconds between markers (default: 40)
             total_markers: maximum number of markers (default: 30)
-    
+
         Returns:
             Polars DataFrame with columns: epoch_id (1-indexed), epoch_start
         """
         first_marker_time = float(marker_df["Time (s)"].to_list()[0])
         time_end = cleaned["time"][-1]
-    
+
         onsets = []
         t = first_marker_time
         while len(onsets) < total_markers and t + epoch_duration <= time_end:
             onsets.append(t)
             t += epoch_duration
-    
+
         return pl.DataFrame({
             "epoch_id": list(range(1, len(onsets) + 1)),
             "epoch_start": onsets,
@@ -349,7 +349,7 @@ def merge_metadata(cleaned, metadata_df):
         metadata_df.sort("epoch_start"),
         left_on="time",
         right_on="epoch_start",
-        strategy="backward",
+        strategy="nearest",
     )
     result = result.drop_nulls(subset=["task_instance"])
     return result
@@ -360,7 +360,7 @@ def _(pl):
 
     def filter_epoch_window(merged_df, window_duration=15.0):
         result = merged_df.filter(
-            (pl.col("time") >= pl.col("epoch_start")) & 
+            (pl.col("time") >= pl.col("epoch_start") - 5.0) & 
             (pl.col("time") < pl.col("epoch_start") + window_duration)
         )
         cal_cols = [c for c in result.columns if "calibrated" in c.lower()]

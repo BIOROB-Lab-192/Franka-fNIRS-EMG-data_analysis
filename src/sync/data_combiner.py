@@ -256,10 +256,10 @@ def combine_100hz(
     fnirs_100 = resample_stream(fnirs_df, valid_range=(-5.0, 15.0))
 
     print("  EMG (~1926 Hz → 100 Hz)...")
-    emg_100 = resample_stream(emg_df, valid_range=(0.0, 15.0))
+    emg_100 = resample_stream(emg_df, valid_range=(-5.0, 15.0))
 
     print("  Robot (variable → 100 Hz)...")
-    robot_100 = resample_stream(robot_df, valid_range=(0.0, 15.0))
+    robot_100 = resample_stream(robot_df, valid_range=(-5.0, 15.0))
 
     # ── Column selection ──
     join_keys = ["run_id", "task_instance", "time_sec"]
