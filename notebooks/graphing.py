@@ -356,11 +356,228 @@ def _(
         )
 
         plt.show()
-    return
+    return (Line2D,)
 
 
 @app.cell
 def _():
+    return
+
+
+@app.cell(hide_code=True)
+def _(df, mo):
+    # fNIRS Task Selector Widget
+    # Reuses: mo, df from existing cells
+
+    _fnirs_task_sorted = sorted(
+        df["task"].unique().to_list(), key=lambda _x: int(_x.split("_")[1])
+    )
+
+    fnirs_task_selector = mo.ui.multiselect(
+        options=_fnirs_task_sorted, value=_fnirs_task_sorted, label="Select tasks"
+    )
+    fnirs_task_selector
+    return (fnirs_task_selector,)
+
+
+@app.cell(hide_code=True)
+def _(Line2D, df, fnirs_task_selector, pl, plt, savgol_filter):
+    # fNIRS Per-Task Interactive Plot
+    # Reuses: df, pl, plt, np, savgol_filter, Line2D from existing cells
+
+    fnirs_task_TIME_MIN = -5.0
+    fnirs_task_TIME_MAX = 15.0
+    fnirs_task_UM = 1e6
+    fnirs_task_SG_WIN = 101
+    fnirs_task_SG_ORD = 3
+
+    # Filter to time window
+    fnirs_task_filtered = df.filter(
+        (pl.col("time_sec") >= fnirs_task_TIME_MIN)
+        & (pl.col("time_sec") <= fnirs_task_TIME_MAX)
+    )
+
+    # Identify fNIRS channels
+    fnirs_task_hbo_cols = [c for c in df.columns if c.endswith("_hbo")]
+    fnirs_task_hbr_cols = [c for c in df.columns if c.endswith("_hbr")]
+
+    # Get selected tasks
+    fnirs_task_selected = fnirs_task_selector.value
+
+    if not fnirs_task_selected:
+        fnirs_task_fig, _ax = plt.subplots(figsize=(14, 5))
+        _ax.text(
+            0.5, 0.5, "No tasks selected", ha="center", va="center", fontsize=14
+        )
+        _ax.set_axis_off()
+        plt.show()
+    else:
+        # Per-task: global mean HbO/HbR across all channels, then across runs
+        fnirs_task_time = None
+        fnirs_task_robot = {}
+        fnirs_task_no_robot = {}
+
+        for _task in fnirs_task_selected:
+            _task_df = fnirs_task_filtered.filter(pl.col("task") == _task)
+
+            # Average all channels within each run
+            _task_run_avg = _task_df.with_columns(
+                [
+                    pl.mean_horizontal(fnirs_task_hbo_cols).alias("hbo_mean"),
+                    pl.mean_horizontal(fnirs_task_hbr_cols).alias("hbr_mean"),
+                ]
+            )
+
+            # Average across runs per condition per time point
+            _task_avg = (
+                _task_run_avg.group_by("time_sec", "is_robot")
+                .agg(
+                    [
+                        pl.col("hbo_mean").mean().alias("hbo"),
+                        pl.col("hbr_mean").mean().alias("hbr"),
+                    ]
+                )
+                .sort("time_sec")
+                .with_columns(
+                    [
+                        (pl.col("hbo") * fnirs_task_UM).alias("hbo"),
+                        (pl.col("hbr") * fnirs_task_UM).alias("hbr"),
+                    ]
+                )
+            )
+
+            if fnirs_task_time is None:
+                fnirs_task_time = _task_avg.filter(pl.col("is_robot") == True)[
+                    "time_sec"
+                ].to_numpy()
+
+            _robot_hbo = _task_avg.filter(pl.col("is_robot") == True)[
+                "hbo"
+            ].to_numpy()
+            _robot_hbr = _task_avg.filter(pl.col("is_robot") == True)[
+                "hbr"
+            ].to_numpy()
+            _no_robot_hbo = _task_avg.filter(pl.col("is_robot") == False)[
+                "hbo"
+            ].to_numpy()
+            _no_robot_hbr = _task_avg.filter(pl.col("is_robot") == False)[
+                "hbr"
+            ].to_numpy()
+
+            if len(_robot_hbo) > fnirs_task_SG_WIN:
+                _robot_hbo = savgol_filter(
+                    _robot_hbo, fnirs_task_SG_WIN, fnirs_task_SG_ORD
+                )
+                _robot_hbr = savgol_filter(
+                    _robot_hbr, fnirs_task_SG_WIN, fnirs_task_SG_ORD
+                )
+            if len(_no_robot_hbo) > fnirs_task_SG_WIN:
+                _no_robot_hbo = savgol_filter(
+                    _no_robot_hbo, fnirs_task_SG_WIN, fnirs_task_SG_ORD
+                )
+                _no_robot_hbr = savgol_filter(
+                    _no_robot_hbr, fnirs_task_SG_WIN, fnirs_task_SG_ORD
+                )
+
+            fnirs_task_robot[_task] = {"hbo": _robot_hbo, "hbr": _robot_hbr}
+            fnirs_task_no_robot[_task] = {
+                "hbo": _no_robot_hbo,
+                "hbr": _no_robot_hbr,
+            }
+
+        # Color: one unique color per task
+        _n_tasks = len(fnirs_task_selected)
+        _cmap = plt.cm.tab10 if _n_tasks <= 10 else plt.cm.tab20
+        fnirs_task_colors = {
+            _t: _cmap(_i / max(_n_tasks - 1, 1))
+            for _i, _t in enumerate(fnirs_task_selected)
+        }
+
+        fnirs_task_fig, (fnirs_task_ax1, fnirs_task_ax2) = plt.subplots(
+            1, 2, figsize=(14, 5)
+        )
+
+        for _task in fnirs_task_selected:
+            _c = fnirs_task_colors[_task]
+            fnirs_task_ax1.plot(
+                fnirs_task_time,
+                fnirs_task_robot[_task]["hbo"],
+                color=_c,
+                linestyle="-",
+            )
+            fnirs_task_ax2.plot(
+                fnirs_task_time,
+                fnirs_task_no_robot[_task]["hbo"],
+                color=_c,
+                linestyle="-",
+            )
+            fnirs_task_ax1.plot(
+                fnirs_task_time,
+                fnirs_task_robot[_task]["hbr"],
+                color=_c,
+                linestyle="--",
+            )
+            fnirs_task_ax2.plot(
+                fnirs_task_time,
+                fnirs_task_no_robot[_task]["hbr"],
+                color=_c,
+                linestyle="--",
+            )
+
+        fnirs_task_ax1.set_title("Robot Trials")
+        fnirs_task_ax1.set_xlabel("Time (s)")
+        fnirs_task_ax1.set_ylabel("Concentration (μM)")
+        fnirs_task_ax1.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+        fnirs_task_ax1.set_ylim(-1, 2)
+
+        fnirs_task_ax2.set_title("No-Robot Trials")
+        fnirs_task_ax2.set_xlabel("Time (s)")
+        fnirs_task_ax2.set_ylabel("Concentration (μM)")
+        fnirs_task_ax2.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+        fnirs_task_ax2.set_ylim(-1, 2)
+
+        # Legend handles
+        _legend_handles = []
+        for _task in fnirs_task_selected:
+            _c = fnirs_task_colors[_task]
+            _legend_handles.append(
+                Line2D([0], [0], color=_c, linestyle="-", label=f"{_task} HbO")
+            )
+            _legend_handles.append(
+                Line2D([0], [0], color=_c, linestyle="--", label=f"{_task} HbR")
+            )
+
+        _n_actual = len(_legend_handles)
+        _ncols_actual = min(_n_actual, 8)
+        _n_legend_rows = (_n_actual + _ncols_actual - 1) // _ncols_actual
+
+        # Grow figure ONLY when needed
+        fnirs_task_fig.set_size_inches(14, 5 + 0.35 * _n_legend_rows)
+
+        # Adjust bottom spacing dynamically
+        _bottom = min(0.34, 0.12 + 0.045 * _n_legend_rows)
+
+        fnirs_task_fig.legend(
+            handles=_legend_handles,
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.03),
+            ncol=_ncols_actual,
+            fontsize=9,
+            frameon=False,
+            handlelength=2,
+            handletextpad=0.5,
+            columnspacing=1.5,
+        )
+
+        fnirs_task_fig.subplots_adjust(
+            left=0.06,
+            right=0.99,
+            top=0.93,
+            bottom=_bottom,
+            wspace=0.20,
+        )
+
+        plt.show()
     return
 
 
