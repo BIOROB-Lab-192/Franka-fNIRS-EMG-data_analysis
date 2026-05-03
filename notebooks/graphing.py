@@ -15,12 +15,32 @@ def _():
 
 
 @app.cell
-def _(pl):
-    DATA_FILE = "./data/processed/combined/combined_100hz.parquet"
+def _(mo, pl):
+    DATA_BASE = "./data/processed/combined/data_packet"
 
-    df = pl.read_parquet(DATA_FILE)
-    df.schema
-    return (df,)
+    fnirs_df = pl.read_parquet(f"{DATA_BASE}/fnirs_full.parquet")
+    emg_df = pl.read_parquet(f"{DATA_BASE}/emg_full.parquet")
+    robot_df = pl.read_parquet(f"{DATA_BASE}/robot_full.parquet")
+    epoch_index = pl.read_csv(f"{DATA_BASE}/epoch_index.csv")
+
+    # Add 'task' column to emg_df (it only has task_instance, not task)
+    emg_df = emg_df.join(
+        epoch_index.select("run_id", "task_instance", "task_id"),
+        on=["run_id", "task_instance"],
+        how="left",
+    ).rename({"task_id": "task"})
+
+    # Add 'task' column to robot_df (it has task_id, rename to task)
+    robot_df = robot_df.rename({"task_id": "task"})
+
+    mo.md(f"""
+    **Data loaded:**
+    - fNIRS: `{fnirs_df.shape[0]:,}` rows × {fnirs_df.shape[1]} cols (10 Hz)
+    - EMG: `{emg_df.shape[0]:,}` rows × {emg_df.shape[1]} cols (~1926 Hz)
+    - Robot: `{robot_df.shape[0]:,}` rows × {robot_df.shape[1]} cols
+    - Epoch index: {epoch_index.shape[0]} epochs
+    """)
+    return emg_df, fnirs_df
 
 
 @app.cell
@@ -44,7 +64,6 @@ def _(pl):
     # Reuses: pl, np from imports cell
     import matplotlib.gridspec as gridspec
     from matplotlib.lines import Line2D
-    from scipy.signal import savgol_filter
 
 
     def apply_baseline(df, signal_cols, time_col="time_sec", baseline_end=0):
@@ -93,7 +112,7 @@ def _(pl):
             columnspacing=1.5,
         )
 
-    return Line2D, apply_baseline, build_legend, legend_layout, savgol_filter
+    return Line2D, apply_baseline, build_legend, legend_layout
 
 
 @app.cell(hide_code=True)
@@ -104,27 +123,25 @@ def fnirs_baseline_switch(mo):
 
 
 @app.cell(hide_code=True)
-def _(df, fnirs_baseline_switch, pl, plt, savgol_filter):
-    # fNIRS Aggregated: Robot vs No-Robot (Global Channel Average + Savitzky-Golay)
-    # Reuses: df, pl, plt, np from existing cells
+def _(fnirs_baseline_switch, fnirs_df, pl, plt):
+    # fNIRS Aggregated: Robot vs No-Robot (Global Channel Average)
+    # Reuses: fnirs_df, pl, plt, np from existing cells
 
     fnirs_TIME_MIN = -5.0
     fnirs_TIME_MAX = 15.0
     fnirs_UM_CONVERSION = 1e6
-    fnirs_SG_WINDOW = 101  # 1 second at 100 Hz (must be odd)
-    fnirs_SG_ORDER = 3
 
     # Filter to time window
-    fnirs_filtered = df.filter(
+    fnirs_filtered = fnirs_df.filter(
         (pl.col("time_sec") >= fnirs_TIME_MIN)
         & (pl.col("time_sec") <= fnirs_TIME_MAX)
     )
 
     # Identify fNIRS channels
-    fnirs_hbo_cols = [c for c in df.columns if c.endswith("_hbo")]
-    fnirs_hbr_cols = [c for c in df.columns if c.endswith("_hbr")]
+    fnirs_hbo_cols = [c for c in fnirs_df.columns if c.endswith("_hbo")]
+    fnirs_hbr_cols = [c for c in fnirs_df.columns if c.endswith("_hbr")]
 
-    # Option A: average channels within each run first
+    # Average channels within each run first
     fnirs_run_avg = fnirs_filtered.with_columns(
         [
             pl.mean_horizontal(fnirs_hbo_cols).alias("hbo_mean"),
@@ -170,29 +187,14 @@ def _(df, fnirs_baseline_switch, pl, plt, savgol_filter):
     fnirs_robot = fnirs_avg.filter(pl.col("is_robot") == True)
     fnirs_no_robot = fnirs_avg.filter(pl.col("is_robot") == False)
 
-    # Apply Savitzky-Golay smoothing
-    fnirs_robot_hbo_smooth = savgol_filter(
-        fnirs_robot["hbo"], fnirs_SG_WINDOW, fnirs_SG_ORDER
-    )
-    fnirs_robot_hbr_smooth = savgol_filter(
-        fnirs_robot["hbr"], fnirs_SG_WINDOW, fnirs_SG_ORDER
-    )
-    fnirs_no_robot_hbo_smooth = savgol_filter(
-        fnirs_no_robot["hbo"], fnirs_SG_WINDOW, fnirs_SG_ORDER
-    )
-    fnirs_no_robot_hbr_smooth = savgol_filter(
-        fnirs_no_robot["hbr"], fnirs_SG_WINDOW, fnirs_SG_ORDER
-    )
-
     # Plot
     fnirs_fig, (fnirs_ax1, fnirs_ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
-    # Robot
     fnirs_ax1.plot(
-        fnirs_robot["time_sec"], fnirs_robot_hbo_smooth, label="HbO", color="red"
+        fnirs_robot["time_sec"], fnirs_robot["hbo"], label="HbO", color="red"
     )
     fnirs_ax1.plot(
-        fnirs_robot["time_sec"], fnirs_robot_hbr_smooth, label="HbR", color="blue"
+        fnirs_robot["time_sec"], fnirs_robot["hbr"], label="HbR", color="blue"
     )
     fnirs_ax1.set_title("Robot Trials")
     fnirs_ax1.set_xlabel("Time (s)")
@@ -200,16 +202,12 @@ def _(df, fnirs_baseline_switch, pl, plt, savgol_filter):
     fnirs_ax1.legend()
     fnirs_ax1.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
 
-    # No-robot
     fnirs_ax2.plot(
-        fnirs_no_robot["time_sec"],
-        fnirs_no_robot_hbo_smooth,
-        label="HbO",
-        color="red",
+        fnirs_no_robot["time_sec"], fnirs_no_robot["hbo"], label="HbO", color="red"
     )
     fnirs_ax2.plot(
         fnirs_no_robot["time_sec"],
-        fnirs_no_robot_hbr_smooth,
+        fnirs_no_robot["hbr"],
         label="HbR",
         color="blue",
     )
@@ -225,15 +223,15 @@ def _(df, fnirs_baseline_switch, pl, plt, savgol_filter):
 
 
 @app.cell(hide_code=True)
-def _(df, mo, pl):
+def _(fnirs_df, mo, pl):
     # fNIRS Overall Summary Stats
-    # Reuses: df, pl, mo from existing cells
+    # Reuses: fnirs_df, pl, mo from existing cells
 
-    _fnirs_ov_filtered = df.filter(
+    _fnirs_ov_filtered = fnirs_df.filter(
         (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") <= 15.0)
     )
-    _fnirs_ov_hbo = [c for c in df.columns if c.endswith("_hbo")]
-    _fnirs_ov_hbr = [c for c in df.columns if c.endswith("_hbr")]
+    _fnirs_ov_hbo = [c for c in fnirs_df.columns if c.endswith("_hbo")]
+    _fnirs_ov_hbr = [c for c in fnirs_df.columns if c.endswith("_hbr")]
 
     # Baseline data (time_sec < 0)
     _fnirs_ov_bl = _fnirs_ov_filtered.filter(pl.col("time_sec") < 0)
@@ -314,11 +312,11 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(df, fnirs_channel_options, fnirs_channel_selector, mo, pl):
+def _(fnirs_channel_options, fnirs_channel_selector, fnirs_df, mo, pl):
     # fNIRS Channel Plot Summary Stats
-    # Reuses: df, pl, mo, fnirs_channel_selector, fnirs_channel_options from existing cells
+    # Reuses: fnirs_df, pl, mo, fnirs_channel_selector, fnirs_channel_options from existing cells
 
-    _fnirs_ch_statsFiltered = df.filter(
+    _fnirs_ch_statsFiltered = fnirs_df.filter(
         (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") <= 15.0)
     )
     _fnirs_ch_bl = _fnirs_ch_statsFiltered.filter(pl.col("time_sec") < 0)
@@ -368,26 +366,23 @@ def _(df, fnirs_channel_options, fnirs_channel_selector, mo, pl):
 def _(
     Line2D,
     build_legend,
-    df,
     fnirs_baseline_switch,
     fnirs_channel_options,
     fnirs_channel_selector,
+    fnirs_df,
     legend_layout,
     pl,
     plt,
-    savgol_filter,
 ):
     # fNIRS Per-Channel Interactive Plot
-    # Reuses: df, pl, plt, np, savgol_filter from existing cells
+    # Reuses: fnirs_df, pl, plt, np from existing cells
 
     fnirs_ch_TIME_MIN = -5.0
     fnirs_ch_TIME_MAX = 15.0
     fnirs_ch_UM = 1e6
-    fnirs_ch_SG_WIN = 101
-    fnirs_ch_SG_ORD = 3
 
     # Filter to time window
-    fnirs_ch_filtered = df.filter(
+    fnirs_ch_filtered = fnirs_df.filter(
         (pl.col("time_sec") >= fnirs_ch_TIME_MIN)
         & (pl.col("time_sec") <= fnirs_ch_TIME_MAX)
     )
@@ -411,7 +406,7 @@ def _(
                 .drop("_base")
             )
 
-    # Build pair → {HbO: col, HbR: col}
+    # Build pair -> {HbO: col, HbR: col}
     fnirs_ch_pairs = {}
     for _lbl in fnirs_channel_selector.value:
         _pair = _lbl.replace(" HbO", "").replace(" HbR", "")
@@ -445,18 +440,12 @@ def _(
                     "time_sec"
                 ].to_numpy()
 
-            _robot = _avg.filter(pl.col("is_robot") == True)["val"].to_numpy()
-            _no_robot = _avg.filter(pl.col("is_robot") == False)["val"].to_numpy()
-
-            if len(_robot) > fnirs_ch_SG_WIN:
-                _robot = savgol_filter(_robot, fnirs_ch_SG_WIN, fnirs_ch_SG_ORD)
-            if len(_no_robot) > fnirs_ch_SG_WIN:
-                _no_robot = savgol_filter(
-                    _no_robot, fnirs_ch_SG_WIN, fnirs_ch_SG_ORD
-                )
-
-            fnirs_ch_robot[_col] = _robot
-            fnirs_ch_no_robot[_col] = _no_robot
+            fnirs_ch_robot[_col] = _avg.filter(pl.col("is_robot") == True)[
+                "val"
+            ].to_numpy()
+            fnirs_ch_no_robot[_col] = _avg.filter(pl.col("is_robot") == False)[
+                "val"
+            ].to_numpy()
 
         # Colors per pair
         _pair_names = sorted(fnirs_ch_pairs.keys())
@@ -466,12 +455,10 @@ def _(
             for _i, _p in enumerate(_pair_names)
         }
 
-        # Create figure (base height = 5)
         fnirs_ch_fig, (fnirs_ch_ax1, fnirs_ch_ax2) = plt.subplots(
             1, 2, figsize=(14, 5)
         )
 
-        # Plot lines
         for _pair, _chroms in fnirs_ch_pairs.items():
             _c = fnirs_ch_pair_colors[_pair]
 
@@ -496,7 +483,6 @@ def _(
                     linestyle="--",
                 )
 
-        # Axes formatting
         fnirs_ch_ax1.set_title("Robot Trials")
         fnirs_ch_ax1.set_xlabel("Time (s)")
         fnirs_ch_ax1.set_ylabel("Concentration (μM)")
@@ -510,7 +496,6 @@ def _(
         fnirs_ch_ax1.set_ylim(-1, 2)
         fnirs_ch_ax2.set_ylim(-1, 2)
 
-        # Legend
         _legend_handles = []
         for _pair in _pair_names:
             _c = fnirs_ch_pair_colors[_pair]
@@ -520,7 +505,9 @@ def _(
                 )
             if "HbR" in fnirs_ch_pairs[_pair]:
                 _legend_handles.append(
-                    Line2D([0], [0], color=_c, linestyle="--", label=f"{_pair} HbR")
+                    Line2D(
+                        [0], [0], color=_c, linestyle="--", label=f"{_pair} HbR"
+                    )
                 )
 
         legend_layout(fnirs_ch_fig, len(_legend_handles))
@@ -531,12 +518,12 @@ def _(
 
 
 @app.cell(hide_code=True)
-def _(df, mo):
+def _(fnirs_df, mo):
     # fNIRS Task Selector Widget
     # Reuses: mo, df from existing cells
 
     _fnirs_task_sorted = sorted(
-        df["task"].unique().to_list(), key=lambda _x: int(_x.split("_")[1])
+        fnirs_df["task"].unique().to_list(), key=lambda _x: int(_x.split("_")[1])
     )
 
     fnirs_task_selector = mo.ui.multiselect(
@@ -547,15 +534,15 @@ def _(df, mo):
 
 
 @app.cell(hide_code=True)
-def _(df, fnirs_task_selector, mo, pl):
+def _(fnirs_df, fnirs_task_selector, mo, pl):
     # fNIRS Task Plot Summary Stats
-    # Reuses: df, pl, mo, fnirs_task_selector from existing cells
+    # Reuses: fnirs_df, pl, mo, fnirs_task_selector from existing cells
 
-    _fnirs_task_statsFiltered = df.filter(
+    _fnirs_task_statsFiltered = fnirs_df.filter(
         (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") <= 15.0)
     )
-    _fnirs_task_hbo_cols_s = [c for c in df.columns if c.endswith("_hbo")]
-    _fnirs_task_hbr_cols_s = [c for c in df.columns if c.endswith("_hbr")]
+    _fnirs_task_hbo_cols_s = [c for c in fnirs_df.columns if c.endswith("_hbo")]
+    _fnirs_task_hbr_cols_s = [c for c in fnirs_df.columns if c.endswith("_hbr")]
     _fnirs_task_bl = _fnirs_task_statsFiltered.filter(pl.col("time_sec") < 0)
 
     _fnirs_task_lines = []
@@ -610,32 +597,29 @@ def _(
     Line2D,
     apply_baseline,
     build_legend,
-    df,
     fnirs_baseline_switch,
+    fnirs_df,
     fnirs_task_selector,
     legend_layout,
     pl,
     plt,
-    savgol_filter,
 ):
     # fNIRS Per-Task Interactive Plot
-    # Reuses: df, pl, plt, np, savgol_filter, Line2D from existing cells
+    # Reuses: fnirs_df, pl, plt, np, Line2D from existing cells
 
     fnirs_task_TIME_MIN = -5.0
     fnirs_task_TIME_MAX = 15.0
     fnirs_task_UM = 1e6
-    fnirs_task_SG_WIN = 101
-    fnirs_task_SG_ORD = 3
 
     # Filter to time window
-    fnirs_task_filtered = df.filter(
+    fnirs_task_filtered = fnirs_df.filter(
         (pl.col("time_sec") >= fnirs_task_TIME_MIN)
         & (pl.col("time_sec") <= fnirs_task_TIME_MAX)
     )
 
     # Identify fNIRS channels
-    fnirs_task_hbo_cols = [c for c in df.columns if c.endswith("_hbo")]
-    fnirs_task_hbr_cols = [c for c in df.columns if c.endswith("_hbr")]
+    fnirs_task_hbo_cols = [c for c in fnirs_df.columns if c.endswith("_hbo")]
+    fnirs_task_hbr_cols = [c for c in fnirs_df.columns if c.endswith("_hbr")]
 
     # Get selected tasks
     fnirs_task_selected = fnirs_task_selector.value
@@ -648,7 +632,6 @@ def _(
         _ax.set_axis_off()
         plt.show()
     else:
-        # Per-task: global mean HbO/HbR across all channels, then across runs
         fnirs_task_time = None
         fnirs_task_robot = {}
         fnirs_task_no_robot = {}
@@ -656,7 +639,6 @@ def _(
         for _task in fnirs_task_selected:
             _task_df = fnirs_task_filtered.filter(pl.col("task") == _task)
 
-            # Average all channels within each run
             _task_run_avg = _task_df.with_columns(
                 [
                     pl.mean_horizontal(fnirs_task_hbo_cols).alias("hbo_mean"),
@@ -664,12 +646,11 @@ def _(
                 ]
             )
 
-            # Baseline correction
             if fnirs_baseline_switch.value:
                 _task_run_avg = apply_baseline(
                     _task_run_avg, ["hbo_mean", "hbr_mean"]
                 )
-            # Average across runs per condition per time point
+
             _task_avg = (
                 _task_run_avg.group_by("time_sec", "is_robot")
                 .agg(
@@ -692,41 +673,23 @@ def _(
                     "time_sec"
                 ].to_numpy()
 
-            _robot_hbo = _task_avg.filter(pl.col("is_robot") == True)[
-                "hbo"
-            ].to_numpy()
-            _robot_hbr = _task_avg.filter(pl.col("is_robot") == True)[
-                "hbr"
-            ].to_numpy()
-            _no_robot_hbo = _task_avg.filter(pl.col("is_robot") == False)[
-                "hbo"
-            ].to_numpy()
-            _no_robot_hbr = _task_avg.filter(pl.col("is_robot") == False)[
-                "hbr"
-            ].to_numpy()
-
-            if len(_robot_hbo) > fnirs_task_SG_WIN:
-                _robot_hbo = savgol_filter(
-                    _robot_hbo, fnirs_task_SG_WIN, fnirs_task_SG_ORD
-                )
-                _robot_hbr = savgol_filter(
-                    _robot_hbr, fnirs_task_SG_WIN, fnirs_task_SG_ORD
-                )
-            if len(_no_robot_hbo) > fnirs_task_SG_WIN:
-                _no_robot_hbo = savgol_filter(
-                    _no_robot_hbo, fnirs_task_SG_WIN, fnirs_task_SG_ORD
-                )
-                _no_robot_hbr = savgol_filter(
-                    _no_robot_hbr, fnirs_task_SG_WIN, fnirs_task_SG_ORD
-                )
-
-            fnirs_task_robot[_task] = {"hbo": _robot_hbo, "hbr": _robot_hbr}
+            fnirs_task_robot[_task] = {
+                "hbo": _task_avg.filter(pl.col("is_robot") == True)[
+                    "hbo"
+                ].to_numpy(),
+                "hbr": _task_avg.filter(pl.col("is_robot") == True)[
+                    "hbr"
+                ].to_numpy(),
+            }
             fnirs_task_no_robot[_task] = {
-                "hbo": _no_robot_hbo,
-                "hbr": _no_robot_hbr,
+                "hbo": _task_avg.filter(pl.col("is_robot") == False)[
+                    "hbo"
+                ].to_numpy(),
+                "hbr": _task_avg.filter(pl.col("is_robot") == False)[
+                    "hbr"
+                ].to_numpy(),
             }
 
-        # Color: one unique color per task
         _n_tasks = len(fnirs_task_selected)
         _cmap = plt.cm.tab10 if _n_tasks <= 10 else plt.cm.tab20
         fnirs_task_colors = {
@@ -777,7 +740,6 @@ def _(
         fnirs_task_ax2.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
         fnirs_task_ax2.set_ylim(-1, 2)
 
-        # Legend
         _legend_handles = []
         for _task in fnirs_task_selected:
             _c = fnirs_task_colors[_task]
@@ -803,16 +765,16 @@ def emg_baseline_switch(mo):
 
 
 @app.cell(hide_code=True)
-def _(df, emg_baseline_switch, pl, plt):
+def _(emg_baseline_switch, emg_df, pl, plt):
     # EMG Aggregated: Robot vs No-Robot (Global Sensor Average)
-    # Reuses: df, pl, plt, np from existing cells
+    # Reuses: emg_df, pl, plt, np from existing cells
 
     emg_ov_TIME_MIN = -5.0
     emg_ov_TIME_MAX = 15.0
 
-    emg_ov_cols = [c for c in df.columns if "EMG" in c and c.endswith("(mV)")]
+    emg_ov_cols = [c for c in emg_df.columns if "EMG" in c and c.endswith("(mV)")]
 
-    emg_ov_filtered = df.filter(
+    emg_ov_filtered = emg_df.filter(
         (pl.col("time_sec") >= emg_ov_TIME_MIN)
         & (pl.col("time_sec") <= emg_ov_TIME_MAX)
     )
@@ -872,14 +834,16 @@ def _(df, emg_baseline_switch, pl, plt):
 
 
 @app.cell(hide_code=True)
-def _(df, mo, pl):
+def _(emg_df, mo, pl):
     # EMG Overall Summary Stats
-    # Reuses: df, pl, mo from existing cells
+    # Reuses: emg_df, pl, mo from existing cells
 
-    emg_ov_statsFiltered = df.filter(
+    emg_ov_statsFiltered = emg_df.filter(
         (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") <= 15.0)
     )
-    emg_ov_emg_cols = [c for c in df.columns if "EMG" in c and c.endswith("(mV)")]
+    emg_ov_emg_cols = [
+        c for c in emg_df.columns if "EMG" in c and c.endswith("(mV)")
+    ]
     emg_ov_bl = emg_ov_statsFiltered.filter(pl.col("time_sec") < 0)
 
     emg_ov_lines = []
@@ -916,12 +880,12 @@ def _(df, mo, pl):
 
 
 @app.cell(hide_code=True)
-def _(df, mo):
+def _(emg_df, mo):
     # EMG Sensor Selector Widget
     # Reuses: mo, df from existing cells
 
     emg_sensor_options = {}
-    for _c in df.columns:
+    for _c in emg_df.columns:
         if "EMG" in _c and _c.endswith("(mV)"):
             # Clean label: "Avanti 1 (82703)" or "Duo 3 EMG1 (78042)"
             _parts = _c.split(" | ")
@@ -946,11 +910,11 @@ def _(df, mo):
 
 
 @app.cell(hide_code=True)
-def _(df, emg_sensor_options, emg_sensor_selector, mo, pl):
+def _(emg_df, emg_sensor_options, emg_sensor_selector, mo, pl):
     # EMG Sensor Plot Summary Stats
-    # Reuses: df, pl, mo, emg_sensor_selector, emg_sensor_options from existing cells
+    # Reuses: emg_df, pl, mo, emg_sensor_selector, emg_sensor_options from existing cells
 
-    emg_sens_statsFiltered = df.filter(
+    emg_sens_statsFiltered = emg_df.filter(
         (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") <= 15.0)
     )
     emg_sens_bl = emg_sens_statsFiltered.filter(pl.col("time_sec") < 0)
@@ -998,8 +962,8 @@ def _(df, emg_sensor_options, emg_sensor_selector, mo, pl):
 def _(
     Line2D,
     build_legend,
-    df,
     emg_baseline_switch,
+    emg_df,
     emg_sensor_options,
     emg_sensor_selector,
     legend_layout,
@@ -1007,12 +971,12 @@ def _(
     plt,
 ):
     # EMG Per-Sensor Interactive Plot
-    # Reuses: df, pl, plt, np, Line2D from existing cells
+    # Reuses: emg_df, pl, plt, np, Line2D from existing cells
 
     emg_sens_TIME_MIN = -5.0
     emg_sens_TIME_MAX = 15.0
 
-    emg_sens_filtered = df.filter(
+    emg_sens_filtered = emg_df.filter(
         (pl.col("time_sec") >= emg_sens_TIME_MIN)
         & (pl.col("time_sec") <= emg_sens_TIME_MAX)
     )
@@ -1043,7 +1007,6 @@ def _(
         _ax.set_axis_off()
         plt.show()
     else:
-        emg_sens_time = None
         emg_sens_robot = {}
         emg_sens_no_robot = {}
 
@@ -1053,18 +1016,8 @@ def _(
                 .agg(pl.col(_col).mean().alias("val"))
                 .sort("time_sec")
             )
-
-            if emg_sens_time is None:
-                emg_sens_time = _avg.filter(pl.col("is_robot") == True)[
-                    "time_sec"
-                ].to_numpy()
-
-            emg_sens_robot[_col] = _avg.filter(pl.col("is_robot") == True)[
-                "val"
-            ].to_numpy()
-            emg_sens_no_robot[_col] = _avg.filter(pl.col("is_robot") == False)[
-                "val"
-            ].to_numpy()
+            emg_sens_robot[_col] = _avg.filter(pl.col("is_robot") == True)
+            emg_sens_no_robot[_col] = _avg.filter(pl.col("is_robot") == False)
 
         # One unique color per sensor
         _n_sens = len(emg_sens_selected)
@@ -1082,10 +1035,18 @@ def _(
             _col = emg_sensor_options[_lbl]
             _c = emg_sens_colors[_col]
             emg_sens_ax1.plot(
-                emg_sens_time, emg_sens_robot[_col], color=_c, label=_lbl
+                emg_sens_robot[_col]["time_sec"].to_numpy(),
+                emg_sens_robot[_col]["val"].to_numpy(),
+                color=_c,
+                label=_lbl,
+                linewidth=0.5,
             )
             emg_sens_ax2.plot(
-                emg_sens_time, emg_sens_no_robot[_col], color=_c, label=_lbl
+                emg_sens_no_robot[_col]["time_sec"].to_numpy(),
+                emg_sens_no_robot[_col]["val"].to_numpy(),
+                color=_c,
+                label=_lbl,
+                linewidth=0.5,
             )
 
         emg_sens_ax1.set_title("Robot Trials")
@@ -1103,9 +1064,7 @@ def _(
         for _lbl in emg_sensor_selector.value:
             _col = emg_sensor_options[_lbl]
             _c = emg_sens_colors[_col]
-            _legend_handles.append(
-                Line2D([0], [0], color=_c, label=_lbl)
-            )
+            _legend_handles.append(Line2D([0], [0], color=_c, label=_lbl))
 
         legend_layout(emg_sens_fig, len(_legend_handles))
         build_legend(emg_sens_fig, _legend_handles)
@@ -1115,12 +1074,12 @@ def _(
 
 
 @app.cell(hide_code=True)
-def _(df, mo):
+def _(emg_df, mo):
     # EMG Task Selector Widget
     # Reuses: mo, df from existing cells
 
     _emg_task_sorted = sorted(
-        df["task"].unique().to_list(), key=lambda _x: int(_x.split("_")[1])
+        emg_df["task"].unique().to_list(), key=lambda _x: int(_x.split("_")[1])
     )
 
     emg_task_selector = mo.ui.multiselect(
@@ -1131,15 +1090,15 @@ def _(df, mo):
 
 
 @app.cell(hide_code=True)
-def _(df, emg_task_selector, mo, pl):
+def _(emg_df, emg_task_selector, mo, pl):
     # EMG Task Plot Summary Stats
-    # Reuses: df, pl, mo, emg_task_selector from existing cells
+    # Reuses: emg_df, pl, mo, emg_task_selector from existing cells
 
-    emg_task_statsFiltered = df.filter(
+    emg_task_statsFiltered = emg_df.filter(
         (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") <= 15.0)
     )
     emg_task_emg_cols_s = [
-        c for c in df.columns if "EMG" in c and c.endswith("(mV)")
+        c for c in emg_df.columns if "EMG" in c and c.endswith("(mV)")
     ]
     emg_task_bl = emg_task_statsFiltered.filter(pl.col("time_sec") < 0)
 
@@ -1186,26 +1145,26 @@ def _(
     Line2D,
     apply_baseline,
     build_legend,
-    df,
     emg_baseline_switch,
+    emg_df,
     emg_task_selector,
     legend_layout,
     pl,
     plt,
 ):
     # EMG Per-Task Interactive Plot
-    # Reuses: df, pl, plt, np, Line2D from existing cells
+    # Reuses: emg_df, pl, plt, np, Line2D from existing cells
 
     emg_task_TIME_MIN = -5.0
     emg_task_TIME_MAX = 15.0
 
-    emg_task_filtered = df.filter(
+    emg_task_filtered = emg_df.filter(
         (pl.col("time_sec") >= emg_task_TIME_MIN)
         & (pl.col("time_sec") <= emg_task_TIME_MAX)
     )
 
     emg_task_emg_cols = [
-        c for c in df.columns if "EMG" in c and c.endswith("(mV)")
+        c for c in emg_df.columns if "EMG" in c and c.endswith("(mV)")
     ]
 
     emg_task_selected = emg_task_selector.value
@@ -1218,7 +1177,6 @@ def _(
         _ax.set_axis_off()
         plt.show()
     else:
-        emg_task_time = None
         emg_task_robot = {}
         emg_task_no_robot = {}
 
@@ -1239,17 +1197,10 @@ def _(
                 .sort("time_sec")
             )
 
-            if emg_task_time is None:
-                emg_task_time = _task_avg.filter(pl.col("is_robot") == True)[
-                    "time_sec"
-                ].to_numpy()
-
-            emg_task_robot[_task] = _task_avg.filter(pl.col("is_robot") == True)[
-                "emg"
-            ].to_numpy()
+            emg_task_robot[_task] = _task_avg.filter(pl.col("is_robot") == True)
             emg_task_no_robot[_task] = _task_avg.filter(
                 pl.col("is_robot") == False
-            )["emg"].to_numpy()
+            )
 
         _n_tasks = len(emg_task_selected)
         _cmap = plt.cm.tab10 if _n_tasks <= 10 else plt.cm.tab20
@@ -1265,10 +1216,18 @@ def _(
         for _task in emg_task_selected:
             _c = emg_task_colors[_task]
             emg_task_ax1.plot(
-                emg_task_time, emg_task_robot[_task], color=_c, label=_task
+                emg_task_robot[_task]["time_sec"].to_numpy(),
+                emg_task_robot[_task]["emg"].to_numpy(),
+                color=_c,
+                label=_task,
+                linewidth=0.5,
             )
             emg_task_ax2.plot(
-                emg_task_time, emg_task_no_robot[_task], color=_c, label=_task
+                emg_task_no_robot[_task]["time_sec"].to_numpy(),
+                emg_task_no_robot[_task]["emg"].to_numpy(),
+                color=_c,
+                label=_task,
+                linewidth=0.5,
             )
 
         emg_task_ax1.set_title("Robot Trials")
@@ -1295,12 +1254,12 @@ def _(
 
 
 @app.cell(hide_code=True)
-def _(df, mo):
+def _(fnirs_df, mo):
     # Per-Run Viewer Widgets
-    # Reuses: mo, df from existing cells
+    # Reuses: mo, fnirs_df, emg_df from existing cells
 
     pr_task_sorted = sorted(
-        df["task"].unique().to_list(), key=lambda _x: int(_x.split("_")[1])
+        fnirs_df["task"].unique().to_list(), key=lambda _x: int(_x.split("_")[1])
     )
 
     pr_task_select = mo.ui.dropdown(options=pr_task_sorted, label="Task")
@@ -1312,7 +1271,7 @@ def _(df, mo):
     )
 
     pr_run_select = mo.ui.dropdown(
-        options=sorted(df["run_id"].unique().to_list()), label="Run"
+        options=sorted(fnirs_df["run_id"].unique().to_list()), label="Run"
     )
 
     pr_baseline_switch = mo.ui.switch(label="Baseline correction (-5 to 0s)")
@@ -1324,7 +1283,131 @@ def _(df, mo):
 
 @app.cell(hide_code=True)
 def _(
-    df,
+    emg_df,
+    fnirs_df,
+    mo,
+    pl,
+    pr_emg_cols,
+    pr_emg_labels,
+    pr_hbo_cols,
+    pr_hbr_cols,
+    pr_robot_select,
+    pr_run_select,
+    pr_task_select,
+):
+    # Per-Run Viewer Summary Stats
+    # Reuses: fnirs_df, emg_df, pr_task_select, pr_robot_select, pr_run_select from existing cells
+
+    if pr_run_select.value is None or pr_task_select.value is None:
+        mo.md("*Select a run and task to see summary statistics.*")
+    else:
+        _cond = (
+            (pl.col("run_id") == pr_run_select.value)
+            & (pl.col("task") == pr_task_select.value)
+            & (pl.col("is_robot") == (pr_robot_select.value == "Robot"))
+        )
+
+        _r_fnirs = fnirs_df.filter(_cond)
+        _r_emg = emg_df.filter(_cond)
+
+        # --- Sampling frequencies ---
+        _fnirs_freq = "10 Hz"
+        _emg_freq = "N/A"
+        if _r_emg.height > 1:
+            _emg_dt = (
+                _r_emg.sort("time_sec")["time_sec"].diff().drop_nulls().median()
+            )
+            if _emg_dt > 0:
+                _emg_freq = f"{1.0 / _emg_dt:.0f} Hz"
+
+        # --- Post-stimulus stats (0-15s) ---
+        _r_fnirs_post = _r_fnirs.filter(pl.col("time_sec") >= 0)
+        _r_emg_post = _r_emg.filter(pl.col("time_sec") >= 0)
+
+        _lines = []
+
+        # Figure caption
+        _participant = (
+            _r_fnirs["participant"][0]
+            if _r_fnirs.height > 0
+            else (_r_emg["participant"][0] if _r_emg.height > 0 else "—")
+        )
+        _lines.append(
+            f"**{_participant}** — {_r_fnirs['run_id'][0]} — "
+            f"{pr_task_select.value} — {pr_robot_select.value}"
+        )
+        _lines.append("")
+
+        # fNIRS stats
+        if _r_fnirs_post.height > 0 and len(pr_hbo_cols) > 0:
+            _hbo_mean = (
+                _r_fnirs_post.select(pl.mean_horizontal(pr_hbo_cols))
+                .drop_nulls()
+                .mean()
+                .item()
+                * 1e6
+            )
+            _hbo_peak = (
+                _r_fnirs_post.select(pl.mean_horizontal(pr_hbo_cols))
+                .drop_nulls()
+                .max()
+                .item()
+                * 1e6
+            )
+            _hbr_mean = (
+                _r_fnirs_post.select(pl.mean_horizontal(pr_hbr_cols))
+                .drop_nulls()
+                .mean()
+                .item()
+                * 1e6
+            )
+            _hbr_peak = (
+                _r_fnirs_post.select(pl.mean_horizontal(pr_hbr_cols))
+                .drop_nulls()
+                .max()
+                .item()
+                * 1e6
+            )
+            _fnirs_n = (
+                _r_fnirs_post.select(pl.mean_horizontal(pr_hbo_cols))
+                .drop_nulls()
+                .height
+            )
+
+            _lines.append(
+                f"**fNIRS** ({_fnirs_freq}, {_fnirs_n} post-stimulus samples)"
+            )
+            _lines.append(f"| | Mean (μM) | Peak (μM) |")
+            _lines.append(f"|---|---|---|")
+            _lines.append(f"| HbO | {_hbo_mean:.4f} | {_hbo_peak:.4f} |")
+            _lines.append(f"| HbR | {_hbr_mean:.4f} | {_hbr_peak:.4f} |")
+            _lines.append("")
+
+        # EMG stats
+        if _r_emg_post.height > 0 and len(pr_emg_cols) > 0:
+            _emg_n = _r_emg_post.height
+            _lines.append(
+                f"**EMG** ({_emg_freq}, {_emg_n:,} post-stimulus samples)"
+            )
+            _lines.append(f"| Sensor | Mean (mV) | Peak (mV) |")
+            _lines.append(f"|--------|-----------|-----------|")
+            for _col, _lbl in zip(pr_emg_cols, pr_emg_labels):
+                _vals = _r_emg_post[_col].drop_nulls()
+                if len(_vals) > 0:
+                    _m = _vals.mean()
+                    _p = _vals.max()
+                    _lines.append(f"| {_lbl} | {_m:.4f} | {_p:.4f} |")
+                else:
+                    _lines.append(f"| {_lbl} | — | — |")
+
+        mo.md("\n".join(_lines))
+    return
+
+
+@app.cell(hide_code=True)
+def _(
+    emg_df,
+    fnirs_df,
     np,
     pl,
     plt,
@@ -1334,14 +1417,14 @@ def _(
     pr_task_select,
 ):
     # Per-Run Viewer Plot
-    # Reuses: df, pl, plt, np from existing cells
+    # Reuses: fnirs_df, emg_df, pl, plt, np from existing cells
 
     pr_TIME_MIN = -5.0
     pr_TIME_MAX = 15.0
 
-    pr_hbo_cols = [c for c in df.columns if c.endswith("_hbo")]
-    pr_hbr_cols = [c for c in df.columns if c.endswith("_hbr")]
-    pr_emg_cols = [c for c in df.columns if "EMG" in c and c.endswith("(mV)")]
+    pr_hbo_cols = [c for c in fnirs_df.columns if c.endswith("_hbo")]
+    pr_hbr_cols = [c for c in fnirs_df.columns if c.endswith("_hbr")]
+    pr_emg_cols = [c for c in emg_df.columns if "EMG" in c and c.endswith("(mV)")]
 
     # EMG labels — full sensor names
     pr_emg_labels = []
@@ -1365,18 +1448,18 @@ def _(
         plt.show()
 
     else:
-        _run_df = (
-            df.filter(
-                (pl.col("run_id") == pr_run_select.value)
-                & (pl.col("task") == pr_task_select.value)
-                & (pl.col("is_robot") == (pr_robot_select.value == "Robot"))
-                & (pl.col("time_sec") >= pr_TIME_MIN)
-                & (pl.col("time_sec") <= pr_TIME_MAX)
-            )
-            .sort("time_sec")
+        _cond_filter = (
+            (pl.col("run_id") == pr_run_select.value)
+            & (pl.col("task") == pr_task_select.value)
+            & (pl.col("is_robot") == (pr_robot_select.value == "Robot"))
+            & (pl.col("time_sec") >= pr_TIME_MIN)
+            & (pl.col("time_sec") <= pr_TIME_MAX)
         )
 
-        if _run_df.height == 0:
+        _run_fnirs = fnirs_df.filter(_cond_filter).sort("time_sec")
+        _run_emg = emg_df.filter(_cond_filter).sort("time_sec")
+
+        if _run_fnirs.height == 0 and _run_emg.height == 0:
             pr_fig, _ax = plt.subplots(figsize=(14, 3))
             _ax.text(
                 0.5,
@@ -1392,13 +1475,12 @@ def _(
         else:
             # ============================================================
             # fNIRS
-            # Important fix:
-            # Collapse to ONE HbO/HbR value per time_sec before plotting.
-            # This prevents matplotlib from drawing vertical filled-looking
-            # blobs when the dataframe has duplicate timestamps.
             # ============================================================
-
-            if len(pr_hbo_cols) == 0 or len(pr_hbr_cols) == 0:
+            if (
+                len(pr_hbo_cols) == 0
+                or len(pr_hbr_cols) == 0
+                or _run_fnirs.height == 0
+            ):
                 _has_fnirs = False
                 _fnirs_time = np.array([])
                 _hbo = np.array([])
@@ -1406,9 +1488,8 @@ def _(
             else:
                 _has_fnirs = True
 
-                _fnirs_df = (
-                    _run_df
-                    .with_columns(
+                _fnirs_df_plot = (
+                    _run_fnirs.with_columns(
                         [
                             pl.mean_horizontal(pr_hbo_cols).alias("HbO"),
                             pl.mean_horizontal(pr_hbr_cols).alias("HbR"),
@@ -1424,12 +1505,12 @@ def _(
                     .sort("time_sec")
                 )
 
-                _fnirs_time = _fnirs_df["time_sec"].to_numpy()
+                _fnirs_time = _fnirs_df_plot["time_sec"].to_numpy()
                 _fnirs_bl = _fnirs_time < 0
 
                 # Convert to μM
-                _hbo = _fnirs_df["HbO"].to_numpy() * 1e6
-                _hbr = _fnirs_df["HbR"].to_numpy() * 1e6
+                _hbo = _fnirs_df_plot["HbO"].to_numpy() * 1e6
+                _hbr = _fnirs_df_plot["HbR"].to_numpy() * 1e6
 
                 # Optional baseline correction
                 if pr_baseline_switch.value:
@@ -1443,24 +1524,20 @@ def _(
                             _hbr = _hbr - _hbr_bl
 
             # ============================================================
-            # EMG
-            # Keep EMG at native sampling rate.
-            # Only collapse duplicate timestamps per EMG channel if needed.
+            # EMG — keep full resolution, plot each channel with own time
             # ============================================================
-
             _emg_data = {}
 
             for _col in pr_emg_cols:
-                _emg_df = (
-                    _run_df
-                    .select(["time_sec", _col])
+                _emg_s = (
+                    _run_emg.select(["time_sec", _col])
                     .group_by("time_sec")
                     .agg(pl.col(_col).mean().alias(_col))
                     .sort("time_sec")
                 )
 
-                _time = _emg_df["time_sec"].to_numpy()
-                _raw = _emg_df[_col].to_numpy().copy()
+                _time = _emg_s["time_sec"].to_numpy()
+                _raw = _emg_s[_col].to_numpy().copy()
                 _emg_bl = _time < 0
 
                 if pr_baseline_switch.value:
@@ -1488,7 +1565,6 @@ def _(
                 gridspec_kw={"hspace": 0.15},
             )
 
-            # Make sure _axes is always list-like
             if _n_emg == 0:
                 _axes = [_axes]
 
@@ -1496,29 +1572,27 @@ def _(
             # fNIRS plot
             # ----------------------------
             if _has_fnirs and len(_fnirs_time) > 0:
-                # fNIRS
                 _axes[0].plot(
                     _fnirs_time,
-                    np.convolve(_hbo, np.ones(100) / 100, mode="same"),
+                    _hbo,
                     label="HbO",
                     color="red",
                     linewidth=1.2,
                 )
-            
                 _axes[0].plot(
                     _fnirs_time,
-                    np.convolve(_hbr, np.ones(100) / 100, mode="same"),
+                    _hbr,
                     label="HbR",
                     color="blue",
                     linewidth=1.2,
-                    )
+                )
                 _axes[0].set_ylabel("Concentration (μM)")
                 _axes[0].legend(loc="upper right", fontsize=8)
             else:
                 _axes[0].text(
                     0.5,
                     0.5,
-                    "No fNIRS columns found",
+                    "No fNIRS data",
                     ha="center",
                     va="center",
                     transform=_axes[0].transAxes,
@@ -1538,15 +1612,10 @@ def _(
                     _emg_data[_col]["time"],
                     _emg_data[_col]["data"],
                     color=f"C{i}",
-                    linewidth=0.8,
+                    linewidth=0.5,
                 )
                 _axes[i + 1].set_ylabel(f"{_label}\n(mV)", fontsize=8)
-                _axes[i + 1].axvline(
-                    x=0,
-                    color="gray",
-                    linestyle="--",
-                    alpha=0.5,
-                )
+                _axes[i + 1].axvline(x=0, color="gray", linestyle="--", alpha=0.5)
 
             _axes[-1].set_xlabel("Time (s)")
 
@@ -1555,7 +1624,7 @@ def _(
 
             plt.tight_layout()
             plt.show()
-    return
+    return pr_emg_cols, pr_emg_labels, pr_hbo_cols, pr_hbr_cols
 
 
 if __name__ == "__main__":
