@@ -1298,19 +1298,23 @@ def _(
     # Per-Run Viewer Summary Stats
     # Reuses: fnirs_df, emg_df, pr_task_select, pr_robot_select, pr_run_select from existing cells
 
+    _lines = []
+
     if pr_run_select.value is None or pr_task_select.value is None:
-        mo.md("*Select a run and task to see summary statistics.*")
+        _lines.append("*Select a run and task to see summary statistics.*")
     else:
         _cond = (
             (pl.col("run_id") == pr_run_select.value)
             & (pl.col("task") == pr_task_select.value)
             & (pl.col("is_robot") == (pr_robot_select.value == "Robot"))
         )
+        _cond_post = _cond & (pl.col("time_sec") >= 0)
 
         _r_fnirs = fnirs_df.filter(_cond)
         _r_emg = emg_df.filter(_cond)
+        _r_fnirs_post = fnirs_df.filter(_cond_post)
+        _r_emg_post = emg_df.filter(_cond_post)
 
-        # --- Sampling frequencies ---
         _fnirs_freq = "10 Hz"
         _emg_freq = "N/A"
         if _r_emg.height > 1:
@@ -1320,77 +1324,60 @@ def _(
             if _emg_dt > 0:
                 _emg_freq = f"{1.0 / _emg_dt:.0f} Hz"
 
-        # --- Post-stimulus stats (0-15s) ---
-        _r_fnirs_post = _r_fnirs.filter(pl.col("time_sec") >= 0)
-        _r_emg_post = _r_emg.filter(pl.col("time_sec") >= 0)
-
-        _lines = []
-
-        # Figure caption
         _participant = (
             _r_fnirs["participant"][0]
             if _r_fnirs.height > 0
-            else (_r_emg["participant"][0] if _r_emg.height > 0 else "—")
+            else (_r_emg["participant"][0] if _r_emg.height > 0 else "\u2014")
         )
+
         _lines.append(
-            f"**{_participant}** — {_r_fnirs['run_id'][0]} — "
-            f"{pr_task_select.value} — {pr_robot_select.value}"
+            f"**{_participant}** \u2014 {pr_run_select.value} \u2014 {pr_task_select.value} \u2014 {pr_robot_select.value}"
         )
         _lines.append("")
 
         # fNIRS stats
+        _fnirs_n = 0
         if _r_fnirs_post.height > 0 and len(pr_hbo_cols) > 0:
-            _hbo_mean = (
-                _r_fnirs_post.select(pl.mean_horizontal(pr_hbo_cols))
-                .drop_nulls()
-                .mean()
-                .item()
-                * 1e6
-            )
-            _hbo_peak = (
-                _r_fnirs_post.select(pl.mean_horizontal(pr_hbo_cols))
-                .drop_nulls()
-                .max()
-                .item()
-                * 1e6
-            )
-            _hbr_mean = (
-                _r_fnirs_post.select(pl.mean_horizontal(pr_hbr_cols))
-                .drop_nulls()
-                .mean()
-                .item()
-                * 1e6
-            )
-            _hbr_peak = (
-                _r_fnirs_post.select(pl.mean_horizontal(pr_hbr_cols))
-                .drop_nulls()
-                .max()
-                .item()
-                * 1e6
-            )
-            _fnirs_n = (
-                _r_fnirs_post.select(pl.mean_horizontal(pr_hbo_cols))
-                .drop_nulls()
-                .height
-            )
+            _hbo_vals = _r_fnirs_post.select(
+                pl.mean_horizontal(pr_hbo_cols)
+            ).drop_nulls()
+            _hbr_vals = _r_fnirs_post.select(
+                pl.mean_horizontal(pr_hbr_cols)
+            ).drop_nulls()
+            if len(_hbo_vals) > 0:
+                _hbo_mean = _hbo_vals.mean().item() * 1e6
+                _hbo_peak = _hbo_vals.max().item() * 1e6
+                _hbr_mean = _hbr_vals.mean().item() * 1e6
+                _hbr_peak = _hbr_vals.max().item() * 1e6
+                _fnirs_n = len(_hbo_vals)
 
-            _lines.append(
-                f"**fNIRS** ({_fnirs_freq}, {_fnirs_n} post-stimulus samples)"
-            )
-            _lines.append(f"| | Mean (μM) | Peak (μM) |")
-            _lines.append(f"|---|---|---|")
+        _lines.append(
+            f"**fNIRS** ({_fnirs_freq}{', ' + str(_fnirs_n) + ' post-stimulus samples' if _fnirs_n > 0 else ''})"
+        )
+        _lines.append("")
+        _lines.append("| | Mean (uM) | Peak (uM) |")
+        _lines.append("|---|---|---|")
+        if _fnirs_n > 0:
             _lines.append(f"| HbO | {_hbo_mean:.4f} | {_hbo_peak:.4f} |")
             _lines.append(f"| HbR | {_hbr_mean:.4f} | {_hbr_peak:.4f} |")
-            _lines.append("")
+        else:
+            _lines.append("| HbO | \u2014 | \u2014 |")
+            _lines.append("| HbR | \u2014 | \u2014 |")
+
+        _lines.append("")
 
         # EMG stats
+        _emg_n = 0
         if _r_emg_post.height > 0 and len(pr_emg_cols) > 0:
             _emg_n = _r_emg_post.height
-            _lines.append(
-                f"**EMG** ({_emg_freq}, {_emg_n:,} post-stimulus samples)"
-            )
-            _lines.append(f"| Sensor | Mean (mV) | Peak (mV) |")
-            _lines.append(f"|--------|-----------|-----------|")
+
+        _lines.append(
+            f"**EMG** ({_emg_freq}{', ' + f'{_emg_n:,}' + ' post-stimulus samples' if _emg_n > 0 else ''})"
+        )
+        _lines.append("")
+        _lines.append("| Sensor | Mean (mV) | Peak (mV) |")
+        _lines.append("|--------|-----------|-----------|")
+        if _emg_n > 0:
             for _col, _lbl in zip(pr_emg_cols, pr_emg_labels):
                 _vals = _r_emg_post[_col].drop_nulls()
                 if len(_vals) > 0:
@@ -1398,9 +1385,12 @@ def _(
                     _p = _vals.max()
                     _lines.append(f"| {_lbl} | {_m:.4f} | {_p:.4f} |")
                 else:
-                    _lines.append(f"| {_lbl} | — | — |")
+                    _lines.append(f"| {_lbl} | \u2014 | \u2014 |")
+        else:
+            for _lbl in pr_emg_labels:
+                _lines.append(f"| {_lbl} | \u2014 | \u2014 |")
 
-        mo.md("\n".join(_lines))
+    mo.md("\n".join(_lines))
     return
 
 
@@ -1508,26 +1498,22 @@ def _(
                 _fnirs_time = _fnirs_df_plot["time_sec"].to_numpy()
                 _fnirs_bl = _fnirs_time < 0
 
-                # Convert to μM
                 _hbo = _fnirs_df_plot["HbO"].to_numpy() * 1e6
                 _hbr = _fnirs_df_plot["HbR"].to_numpy() * 1e6
 
-                # Optional baseline correction
                 if pr_baseline_switch.value:
                     if np.any(_fnirs_bl):
                         _hbo_bl = np.nanmean(_hbo[_fnirs_bl])
                         _hbr_bl = np.nanmean(_hbr[_fnirs_bl])
-
                         if not np.isnan(_hbo_bl):
                             _hbo = _hbo - _hbo_bl
                         if not np.isnan(_hbr_bl):
                             _hbr = _hbr - _hbr_bl
 
             # ============================================================
-            # EMG — keep full resolution, plot each channel with own time
+            # EMG
             # ============================================================
             _emg_data = {}
-
             for _col in pr_emg_cols:
                 _emg_s = (
                     _run_emg.select(["time_sec", _col])
@@ -1535,27 +1521,19 @@ def _(
                     .agg(pl.col(_col).mean().alias(_col))
                     .sort("time_sec")
                 )
-
                 _time = _emg_s["time_sec"].to_numpy()
                 _raw = _emg_s[_col].to_numpy().copy()
                 _emg_bl = _time < 0
-
                 if pr_baseline_switch.value:
                     _valid = ~np.isnan(_raw)
                     _bl_vals = _raw[_valid & _emg_bl]
-
                     if len(_bl_vals) > 0:
                         _raw[_valid] = _raw[_valid] - np.nanmean(_bl_vals)
-
-                _emg_data[_col] = {
-                    "time": _time,
-                    "data": _raw,
-                }
+                _emg_data[_col] = {"time": _time, "data": _raw}
 
             # ============================================================
             # Figure
             # ============================================================
-
             _n_emg = len(pr_emg_cols)
             _fig, _axes = plt.subplots(
                 _n_emg + 1,
@@ -1564,27 +1542,16 @@ def _(
                 sharex=True,
                 gridspec_kw={"hspace": 0.15},
             )
-
             if _n_emg == 0:
                 _axes = [_axes]
 
-            # ----------------------------
             # fNIRS plot
-            # ----------------------------
             if _has_fnirs and len(_fnirs_time) > 0:
                 _axes[0].plot(
-                    _fnirs_time,
-                    _hbo,
-                    label="HbO",
-                    color="red",
-                    linewidth=1.2,
+                    _fnirs_time, _hbo, label="HbO", color="red", linewidth=1.2
                 )
                 _axes[0].plot(
-                    _fnirs_time,
-                    _hbr,
-                    label="HbR",
-                    color="blue",
-                    linewidth=1.2,
+                    _fnirs_time, _hbr, label="HbR", color="blue", linewidth=1.2
                 )
                 _axes[0].set_ylabel("Concentration (μM)")
                 _axes[0].legend(loc="upper right", fontsize=8)
@@ -1604,9 +1571,7 @@ def _(
                 f"fNIRS — {pr_run_select.value} — {pr_task_select.value} — {pr_robot_select.value}"
             )
 
-            # ----------------------------
             # EMG plots
-            # ----------------------------
             for i, (_col, _label) in enumerate(zip(pr_emg_cols, pr_emg_labels)):
                 _axes[i + 1].plot(
                     _emg_data[_col]["time"],
@@ -1618,7 +1583,6 @@ def _(
                 _axes[i + 1].axvline(x=0, color="gray", linestyle="--", alpha=0.5)
 
             _axes[-1].set_xlabel("Time (s)")
-
             for _ax in _axes:
                 _ax.set_xlim(pr_TIME_MIN, pr_TIME_MAX)
 
