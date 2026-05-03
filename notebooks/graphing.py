@@ -13,7 +13,7 @@ def _():
     import json
     import ast
 
-    return ast, np, pl
+    return ast, mo, np, pl, plt
 
 
 @app.cell
@@ -22,7 +22,7 @@ def _(pl):
 
     df = pl.read_parquet(DATA_FILE)
     df
-    return
+    return (df,)
 
 
 @app.cell
@@ -36,8 +36,273 @@ def _(ast, np):
     return
 
 
-@app.cell
-def _():
+@app.cell(hide_code=True)
+def _(df, pl, plt):
+    # fNIRS Aggregated: Robot vs No-Robot (Global Channel Average + Savitzky-Golay)
+    # Reuses: df, pl, plt, np from existing cells
+    from scipy.signal import savgol_filter
+
+    fnirs_TIME_MIN = -5.0
+    fnirs_TIME_MAX = 15.0
+    fnirs_UM_CONVERSION = 1e6
+    fnirs_SG_WINDOW = 101  # 1 second at 100 Hz (must be odd)
+    fnirs_SG_ORDER = 3
+
+    # Filter to time window
+    fnirs_filtered = df.filter(
+        (pl.col("time_sec") >= fnirs_TIME_MIN)
+        & (pl.col("time_sec") <= fnirs_TIME_MAX)
+    )
+
+    # Identify fNIRS channels
+    fnirs_hbo_cols = [c for c in df.columns if c.endswith("_hbo")]
+    fnirs_hbr_cols = [c for c in df.columns if c.endswith("_hbr")]
+
+    # Option A: average channels within each run first
+    fnirs_run_avg = fnirs_filtered.with_columns(
+        [
+            pl.mean_horizontal(fnirs_hbo_cols).alias("hbo_mean"),
+            pl.mean_horizontal(fnirs_hbr_cols).alias("hbr_mean"),
+        ]
+    )
+
+    # Average across runs per condition per time point
+    fnirs_avg = (
+        fnirs_run_avg.group_by("time_sec", "is_robot")
+        .agg(
+            [
+                pl.col("hbo_mean").mean().alias("hbo"),
+                pl.col("hbr_mean").mean().alias("hbr"),
+            ]
+        )
+        .sort("time_sec")
+    )
+
+    # Convert to μM
+    fnirs_avg = fnirs_avg.with_columns(
+        [
+            (pl.col("hbo") * fnirs_UM_CONVERSION).alias("hbo"),
+            (pl.col("hbr") * fnirs_UM_CONVERSION).alias("hbr"),
+        ]
+    )
+
+    # Split by condition
+    fnirs_robot = fnirs_avg.filter(pl.col("is_robot") == True)
+    fnirs_no_robot = fnirs_avg.filter(pl.col("is_robot") == False)
+
+    # Apply Savitzky-Golay smoothing
+    fnirs_robot_hbo_smooth = savgol_filter(
+        fnirs_robot["hbo"], fnirs_SG_WINDOW, fnirs_SG_ORDER
+    )
+    fnirs_robot_hbr_smooth = savgol_filter(
+        fnirs_robot["hbr"], fnirs_SG_WINDOW, fnirs_SG_ORDER
+    )
+    fnirs_no_robot_hbo_smooth = savgol_filter(
+        fnirs_no_robot["hbo"], fnirs_SG_WINDOW, fnirs_SG_ORDER
+    )
+    fnirs_no_robot_hbr_smooth = savgol_filter(
+        fnirs_no_robot["hbr"], fnirs_SG_WINDOW, fnirs_SG_ORDER
+    )
+
+    # Plot
+    fnirs_fig, (fnirs_ax1, fnirs_ax2) = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Robot
+    fnirs_ax1.plot(
+        fnirs_robot["time_sec"], fnirs_robot_hbo_smooth, label="HbO", color="red"
+    )
+    fnirs_ax1.plot(
+        fnirs_robot["time_sec"], fnirs_robot_hbr_smooth, label="HbR", color="blue"
+    )
+    fnirs_ax1.set_title("Robot Trials")
+    fnirs_ax1.set_xlabel("Time (s)")
+    fnirs_ax1.set_ylabel("Concentration (μM)")
+    fnirs_ax1.legend()
+    fnirs_ax1.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+
+    # No-robot
+    fnirs_ax2.plot(
+        fnirs_no_robot["time_sec"],
+        fnirs_no_robot_hbo_smooth,
+        label="HbO",
+        color="red",
+    )
+    fnirs_ax2.plot(
+        fnirs_no_robot["time_sec"],
+        fnirs_no_robot_hbr_smooth,
+        label="HbR",
+        color="blue",
+    )
+    fnirs_ax2.set_title("No-Robot Trials")
+    fnirs_ax2.set_xlabel("Time (s)")
+    fnirs_ax2.set_ylabel("Concentration (μM)")
+    fnirs_ax2.legend()
+    fnirs_ax2.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+
+    plt.tight_layout()
+    fnirs_fig
+    return (savgol_filter,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    # fNIRS Channel Selector Widget
+    # Reuses: mo from imports cell
+
+    fnirs_channel_options = {}
+    _fnirs_src_det = {
+        1: ["D1", "D2", "D3", "D8"],
+        2: ["D1", "D3", "D4", "D9"],
+        3: ["D2", "D3", "D10"],
+        4: ["D3", "D4", "D11"],
+        5: ["D5", "D6", "D7", "D12"],
+        6: ["D5", "D7", "D13"],
+        7: ["D6", "D7", "D14"],
+        8: ["D7", "D15"],
+    }
+    for _s, _dets in _fnirs_src_det.items():
+        for _d in _dets:
+            for _c in ["HbO", "HbR"]:
+                _lbl = f"S{_s}→{_d} {_c}"
+                fnirs_channel_options[_lbl] = f"S{_s}_{_d}_{_c.lower()}"
+
+    fnirs_channel_selector = mo.ui.multiselect(
+        options=list(fnirs_channel_options.keys()),
+        value=list(fnirs_channel_options.keys()),
+        label="Select fNIRS channels",
+    )
+    fnirs_channel_selector
+    return fnirs_channel_options, fnirs_channel_selector
+
+
+@app.cell(hide_code=True)
+def _(
+    df,
+    fnirs_channel_options,
+    fnirs_channel_selector,
+    pl,
+    plt,
+    savgol_filter,
+):
+    # fNIRS Per-Channel Interactive Plot
+    # Reuses: df, pl, plt, np, savgol_filter from existing cells
+
+    fnirs_ch_TIME_MIN = -5.0
+    fnirs_ch_TIME_MAX = 15.0
+    fnirs_ch_UM = 1e6
+    fnirs_ch_SG_WIN = 101
+    fnirs_ch_SG_ORD = 3
+
+    # Filter to time window
+    fnirs_ch_filtered = df.filter(
+        (pl.col("time_sec") >= fnirs_ch_TIME_MIN)
+        & (pl.col("time_sec") <= fnirs_ch_TIME_MAX)
+    )
+
+    # Get selected channels
+    fnirs_ch_selected = [
+        fnirs_channel_options[_ch] for _ch in fnirs_channel_selector.value
+    ]
+
+    if not fnirs_ch_selected:
+        fnirs_ch_fig, _ax = plt.subplots(figsize=(7, 5))
+        _ax.text(
+            0.5, 0.5, "No channels selected", ha="center", va="center", fontsize=14
+        )
+        _ax.set_axis_off()
+        plt.show()
+    else:
+        # Compute per-channel means across runs per condition
+        fnirs_ch_time = None
+        fnirs_ch_robot = {}
+        fnirs_ch_no_robot = {}
+
+        for _col in fnirs_ch_selected:
+            _avg = (
+                fnirs_ch_filtered.group_by("time_sec", "is_robot")
+                .agg(
+                    [
+                        pl.col(_col).mean().alias("val"),
+                    ]
+                )
+                .sort("time_sec")
+                .with_columns((pl.col("val") * fnirs_ch_UM).alias("val"))
+            )
+
+            if fnirs_ch_time is None:
+                fnirs_ch_time = _avg.filter(pl.col("is_robot") == True)[
+                    "time_sec"
+                ].to_numpy()
+
+            _robot = _avg.filter(pl.col("is_robot") == True)["val"].to_numpy()
+            _no_robot = _avg.filter(pl.col("is_robot") == False)["val"].to_numpy()
+
+            if len(_robot) > fnirs_ch_SG_WIN:
+                _robot = savgol_filter(_robot, fnirs_ch_SG_WIN, fnirs_ch_SG_ORD)
+            if len(_no_robot) > fnirs_ch_SG_WIN:
+                _no_robot = savgol_filter(
+                    _no_robot, fnirs_ch_SG_WIN, fnirs_ch_SG_ORD
+                )
+
+            fnirs_ch_robot[_col] = _robot
+            fnirs_ch_no_robot[_col] = _no_robot
+
+        # Color scheme: warm for HbO, cool for HbR
+        _hbo_labels = [_l for _l in fnirs_channel_selector.value if "HbO" in _l]
+        _hbr_labels = [_l for _l in fnirs_channel_selector.value if "HbR" in _l]
+        fnirs_ch_colors = {}
+        for _i, _lbl in enumerate(_hbo_labels):
+            fnirs_ch_colors[_lbl] = plt.cm.Reds(
+                0.3 + 0.6 * _i / max(len(_hbo_labels) - 1, 1)
+            )
+        for _i, _lbl in enumerate(_hbr_labels):
+            fnirs_ch_colors[_lbl] = plt.cm.Blues(
+                0.3 + 0.6 * _i / max(len(_hbr_labels) - 1, 1)
+            )
+
+        # Plot — two subplots side by side, legend below
+        _n_ch = len(fnirs_channel_selector.value)
+        _ncols_legend = min(4, _n_ch)
+        _legend_rows = (_n_ch + _ncols_legend - 1) // _ncols_legend
+        _bottom_margin = 0.04 + 0.06 * _legend_rows
+
+        fnirs_ch_fig, (fnirs_ch_ax1, fnirs_ch_ax2) = plt.subplots(
+            1,
+            2,
+            figsize=(14, 5),
+        )
+        fnirs_ch_fig.subplots_adjust(bottom=_bottom_margin, top=0.92)
+
+        for _lbl in fnirs_channel_selector.value:
+            _col = fnirs_channel_options[_lbl]
+            _c = fnirs_ch_colors[_lbl]
+            fnirs_ch_ax1.plot(
+                fnirs_ch_time, fnirs_ch_robot[_col], label=_lbl, color=_c
+            )
+            fnirs_ch_ax2.plot(
+                fnirs_ch_time, fnirs_ch_no_robot[_col], label=_lbl, color=_c
+            )
+
+        fnirs_ch_ax1.set_title("Robot Trials")
+        fnirs_ch_ax1.set_xlabel("Time (s)")
+        fnirs_ch_ax1.set_ylabel("Concentration (μM)")
+        fnirs_ch_ax1.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+
+        fnirs_ch_ax2.set_title("No-Robot Trials")
+        fnirs_ch_ax2.set_xlabel("Time (s)")
+        fnirs_ch_ax2.set_ylabel("Concentration (μM)")
+        fnirs_ch_ax2.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+
+        # Shared legend below the figure
+        fnirs_ch_fig.legend(
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.0),
+            ncol=_ncols_legend,
+            fontsize=7,
+            frameon=False,
+        )
+
+        plt.show()
     return
 
 
