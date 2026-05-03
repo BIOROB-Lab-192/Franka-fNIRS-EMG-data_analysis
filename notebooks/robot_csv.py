@@ -31,7 +31,7 @@ def _(RAW_DIR, mo):
 
 @app.function
 def process_robot_file(
-    run_id, robot_path, base_path="/Users/haider/code/data_analysis"
+    run_id, robot_path, base_path="/Users/haider/code/Franka-fNIRS-EMG-data_analysis"
 ):
     """
     Load a single robot CSV, split marker runs into logical task instances, and
