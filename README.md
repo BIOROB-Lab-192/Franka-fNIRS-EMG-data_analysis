@@ -35,22 +35,23 @@ Franka-fNIRS-EMG-data_analysis/
 
 ## Setup
 
+Requires UV https://docs.astral.sh/uv/getting-started/installation/
 Requires Python ≥ 3.13.
 
 ```bash
 # Clone and install
-git clone <repo-url>
+git clone https://github.com/BIOROB-Lab-192/Franka-DataCapture
 cd Franka-fNIRS-EMG-data_analysis
 uv sync
 ```
 
 ## Dependencies
+UV sync will install all packages required
 
-- **Polars** — Data processing (not pandas)
+- **Polars** — Data processing
 - **Marimo** — Interactive notebooks
 - **MNE** — fNIRS processing (SNiRF, optical density, Beer-Lambert)
 - **Matplotlib** — Visualization (plotly too large for high-freq data)
-- **h5py** — SNiRF file reading
 
 ## Data Pipeline
 
@@ -65,10 +66,10 @@ load_trigno_csv → sync_sensor_streams → handle_dropouts →
 generate_epochs → add_metadata → merge_metadata → filter_epoch_window
 ```
 
-- **Sync**: All sensor channels aligned to the fastest sensor (~1926 Hz) via `join_asof nearest`
-- **Dropouts**: EMG zeros → null (honest), IMU zeros → interpolated (physically smooth)
+- **Sync**: All sensor channels aligned to the fastest sensor via `join_asof nearest`
+- **Dropouts**: EMG zeros → null, IMU zeros → interpolated 
 - **Epochs**: 30 epochs per session, 15s task windows, 40s intervals
-- **Output**: `data/processed/all_emg_epochs.parquet` (8.7M rows × 28 cols)
+- **Output**: `data/processed/all_emg_epochs.parquet` 
 
 ### 2. Robot Processing (`notebooks/robot_csv.py`)
 
@@ -127,7 +128,7 @@ python -m src.sync.data_combiner --emg PATH --robot PATH --fnirs PATH --output D
 
 ```
 data/processed/combined/
-├── combined_100hz.parquet      # All streams at 100 Hz (125 MB)
+├── combined_100hz.parquet      # All streams at 100 Hz
 └── data_packet/                # Full resolution
     ├── emg_full.parquet        # ~1926 Hz
     ├── robot_full.parquet      # Variable rate
