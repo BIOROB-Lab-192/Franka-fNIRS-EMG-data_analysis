@@ -34,15 +34,23 @@ def process_robot_file(
     run_id, robot_path, base_path="/Users/haider/code/Franka-fNIRS-EMG-data_analysis"
 ):
     """
-    Load a single robot CSV, split marker runs into logical task instances, and
-    always return a consistent schema across robot/norobot runs.
+    Load a single robot CSV and split marker runs into logical task instances.
 
-    Handles:
-    - normal runs -> 1 task
-    - doubled runs -> split into 2 sequential tasks
-    - final overrun -> forced to 1 task
+    Handles three edge cases:
+        - Normal runs:    one physical marker → one task instance
+        - Doubled runs:   marker duration ≈ 2× median → split into 2 tasks
+        - Final overrun:  last marker with no successor → forced to 1 task
 
-    Returns a pl.DataFrame with a fixed schema suitable for concatenation.
+    Ensures a fixed schema across all sessions (robot and norobot) by filling
+    missing Franka columns with nulls.
+
+    Args:
+        run_id:     Session identifier (e.g. "sam_robot_1").
+        robot_path: Path to the robot CSV, or None for norobot sessions.
+        base_path:  Project root for resolving relative paths.
+
+    Returns:
+        Polars DataFrame with fixed schema, sorted by timestamp.
     """
     import os
     import polars as pl
@@ -269,6 +277,17 @@ def process_robot_file(
 @app.cell
 def _(data_files):
     def build_giant_robot_csv(data_files):
+        """Process all robot CSVs and concatenate into a single DataFrame.
+
+        Iterates over every session in data_files, applies process_robot_file to
+        split physical marker runs into task instances, and concatenates the results.
+
+        Args:
+            data_files: Dict from load_data() mapping run_id → file paths.
+
+        Returns:
+            Polars DataFrame with all robot sessions concatenated.
+        """
         import polars as pl
 
         dfs = []
@@ -299,6 +318,8 @@ def _(robot_df):
 
 @app.cell
 def _(pl, robot_df):
+    # Filter to [-5, +15s) relative to each task's start timestamp.
+    # Matches the fNIRS epoch window for cross-stream alignment.
     first_15s_df = (
         robot_df
         .filter(
@@ -320,6 +341,8 @@ def _(first_15s_df):
 
 @app.cell
 def _(first_15s_df, pl):
+    # Verify each task instance spans the expected time range.
+    # Catches marker misalignments or truncated recordings.
     duration_check = (
         first_15s_df
         .group_by(["run_id", "task_instance"], maintain_order=True)

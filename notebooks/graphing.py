@@ -3,6 +3,21 @@ import marimo
 __generated_with = "0.23.3"
 app = marimo.App(width="medium")
 
+# ═══════════════════════════════════════════════════════════════
+# graphing.py — Multi-Sensor Visualization Dashboard
+# ═══════════════════════════════════════════════════════════════
+# Interactive marimo notebook for visualizing fNIRS and EMG data
+# from the combined data packet. Sections:
+#   1. Data loading
+#   2. Plot helpers (baseline correction, legend layout)
+#   3. fNIRS — aggregated, per-channel, per-task plots + stats
+#   4. EMG — aggregated, per-sensor, per-task plots + stats
+#   5. Per-run viewer — stacked fNIRS + EMG for individual epochs
+#
+# All plots support optional baseline correction (-5 to 0s).
+# Data loaded from data/processed/combined/data_packet/.
+# ═══════════════════════════════════════════════════════════════
+
 
 @app.cell
 def _():
@@ -117,6 +132,7 @@ def _(pl):
 
 @app.cell(hide_code=True)
 def fnirs_baseline_switch(mo):
+    # ─── fNIRS Plots ───────────────────────────────────────────
     fnirs_baseline_switch = mo.ui.switch(label="Baseline correction (-5 to 0s)")
     fnirs_baseline_switch
     return (fnirs_baseline_switch,)
@@ -765,6 +781,7 @@ def _(
 
 @app.cell(hide_code=True)
 def emg_baseline_switch(mo):
+    # ─── EMG Plots ─────────────────────────────────────────────
     emg_baseline_switch = mo.ui.switch(label="Baseline correction (-5 to 0s)")
     emg_baseline_switch
     return (emg_baseline_switch,)
@@ -1273,6 +1290,7 @@ def _(
 
 @app.cell(hide_code=True)
 def _(fnirs_df, mo):
+    # ─── Per-Run Viewer ────────────────────────────────────────
     # Per-Run Viewer Widgets
     # Reuses: mo, fnirs_df, emg_df from existing cells
 

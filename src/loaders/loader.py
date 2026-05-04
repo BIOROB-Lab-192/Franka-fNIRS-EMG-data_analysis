@@ -1,3 +1,23 @@
+"""
+loader.py — Multi-Modal Data File Discovery
+=============================================
+Walks the raw data directory and discovers fNIRS, EMG, robot, and video
+files for each participant session.
+
+Expected folder structure:
+    data/raw/{participant}_{condition}[{num}]/
+        {session_date}/           ← SNiRF files here
+        *.csv                     ← EMG Trigno CSV (direct child only)
+        ...subfolder/             ← robot CSV + video MP4 here
+
+Folder naming: {participant}_{robot|norobot}{num}
+    e.g. sam_robot1, clarence_norobot, ronald_robot2
+
+Usage:
+    from src.loaders.loader import load_data
+    files = load_data("data/raw")
+"""
+
 import os
 import re
 import pprint
@@ -5,11 +25,22 @@ import pprint
 
 def load_data(raw_dir):
     """
-    Discover all data files for a participant-session.
+    Discover all data files for each participant session in raw_dir.
 
-    Returns a dict:
-        {key: {"fNIRS": snirf_path, "emg": emg_path, "robot": robot_csv_path, "video": video_path}}
-    where key = "{participant}_{condition}[_{num}]"
+    Scans for folders matching {participant}_{robot|norobot}{num} and locates
+    four file types by their position in the folder tree:
+        - fNIRS:  .snirf inside a date-stamped session subfolder
+        - EMG:    .csv sitting directly in the participant folder
+        - Robot:  .csv in a deeper subfolder that also contains a video file
+        - Video:  .mp4/.avi alongside the robot CSV
+
+    Args:
+        raw_dir: Path to the raw data directory containing participant folders.
+
+    Returns:
+        dict: Keys are "{participant}_{condition}[_{num}]" strings.
+              Values are dicts with "fNIRS", "emg", "robot", "video" keys,
+              each holding an absolute path or None if not found.
     """
     data_files = {}
 
@@ -48,9 +79,10 @@ def load_data(raw_dir):
                 entry["emg"] = os.path.join(folder_path, f)
                 break
 
-        # Robot + video: in a deeper folder (has a CSV next to a video)
+        # Robot + video live together in a subfolder. Walk the tree and
+        # stop at the first directory containing both a CSV and a video file.
         for root, dirs, files in os.walk(folder_path):
-            # Skip session date folders and Trial_number for robot search
+            # Skip date-stamped session folders (fNIRS) and Trial_number folders
             if "Trial_number" in root or re.search(r"\d{4}-\d{2}-\d{2}", root):
                 continue
             csvs = [f for f in files if f.endswith(".csv")]

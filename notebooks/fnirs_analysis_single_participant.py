@@ -6,6 +6,10 @@ app = marimo.App()
 
 @app.cell
 def _():
+    # Single-participant fNIRS pipeline walkthrough.
+    # Steps: load SNiRF → pick fNIRS channels → optical density →
+    # Beer-Lambert (HbO/HbR) → scalp coupling index → bandpass filter →
+    # epoch extraction → visualization (evoked, topomaps, joint plots).
     import marimo as mo
     import matplotlib.pyplot as plt
     import mne

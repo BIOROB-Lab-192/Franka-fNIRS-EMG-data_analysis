@@ -35,6 +35,24 @@ def _(load_data, mo):
 @app.cell(hide_code=True)
 def _(Path, csv, pl):
     def load_trigno_csv(filepath):
+        """Load a Delsys Trigno CSV file into main signal + marker DataFrames.
+
+        The Trigno export uses a multi-row header format:
+            - 2 rows above the main header contain sensor names
+            - The main header row has channel labels (e.g. "Time Series (s)")
+            - Data starts 3 rows below the main header
+            - A marker table may follow the main data block
+
+        Args:
+            filepath: Path to the Trigno CSV file.
+
+        Returns:
+            Tuple of (main_df, marker_df):
+                main_df:   Polars DataFrame with float sensor columns
+                           named "{sensor} | {channel}".
+                marker_df: Polars DataFrame with marker events, or empty
+                           if no markers found.
+        """
         filepath = Path(filepath)
 
         with open(filepath, "r", newline="", encoding="utf-8-sig") as f:
@@ -326,6 +344,19 @@ def _(pl):
 def _(pl):
 
     def add_metadata(epochs_df, run_id):
+        """Attach participant and condition metadata to an epochs DataFrame.
+
+        Parses the run_id string (e.g. "sam_robot_1") into participant name
+        and robot condition, adding these as columns alongside task_instance
+        derived from epoch_id.
+
+        Args:
+            epochs_df: DataFrame with an "epoch_id" column (1-indexed).
+            run_id:    Session identifier like "sam_robot_1" or "clarence_norobot".
+
+        Returns:
+            DataFrame with columns: task_instance, run_id, is_robot, participant.
+        """
         import re
         match = re.match(r"^(\w+?)_(robot|norobot)(?:_(\d+))?$", run_id)
         if not match:
@@ -345,6 +376,18 @@ def _(pl):
 
 @app.function(hide_code=True)
 def merge_metadata(cleaned, metadata_df):
+    """Join epoch metadata onto cleaned signal data via nearest-neighbor time match.
+
+    Uses join_asof to assign each sample to its enclosing epoch based on
+    the nearest epoch_start timestamp. Rows before the first epoch are dropped.
+
+    Args:
+        cleaned:      Signal DataFrame with a "time" column.
+        metadata_df:  Epoch metadata with "epoch_start" and "task_instance" columns.
+
+    Returns:
+        DataFrame with signal data plus task_instance, run_id, is_robot, participant.
+    """
     result = cleaned.join_asof(
         metadata_df.sort("epoch_start"),
         left_on="time",
@@ -359,6 +402,18 @@ def merge_metadata(cleaned, metadata_df):
 def _(pl):
 
     def filter_epoch_window(merged_df, window_duration=15.0):
+        """Trim each epoch to [-5s, +window_duration) around epoch_start.
+
+        Keeps only samples within the analysis window and drops any
+        calibrated/auxiliary columns that leaked through from the raw data.
+
+        Args:
+            merged_df:       DataFrame with "time" and "epoch_start" columns.
+            window_duration: Post-stimulus window length in seconds (default 15).
+
+        Returns:
+            Filtered DataFrame with calibrated columns removed.
+        """
         result = merged_df.filter(
             (pl.col("time") >= pl.col("epoch_start") - 5.0) & 
             (pl.col("time") < pl.col("epoch_start") + window_duration)
@@ -386,6 +441,11 @@ def _(
     sync_sensor_streams,
 ):
     def process_session(_emg_path, _run_id):
+        """Run the full EMG processing pipeline for one session.
+
+        Steps: load CSV → sync sensors → handle dropouts → generate epochs
+        → attach metadata → merge onto signal → window to [-5, +15s).
+        """
         _main_df, _marker_df = load_trigno_csv(_emg_path)
         _synced = sync_sensor_streams(_main_df)
         _cleaned = handle_dropouts(_synced)
@@ -395,7 +455,11 @@ def _(
         _windowed = filter_epoch_window(_merged)
         return _windowed
 
-    # Batch process all sessions
+    # Two-pass batch processing:
+    #   Pass 1: Run every session through the pipeline to discover the
+    #           intersection of columns (different sessions may have
+    #           different sensor counts).
+    #   Pass 2: Re-run with only common columns, then concatenate.
     _emg_files = load_data(RAW_DIR)
 
     # First pass: find common columns through full pipeline

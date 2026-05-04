@@ -47,6 +47,7 @@ def _(RAW_DIR, mo):
 @app.cell
 def _(data_files, mne):
     def _():
+        """Print per-session epoch statistics: total, kept, and dropped counts."""
         session_stats = {}
         for key, paths in data_files.items():
             raw = mne.io.read_raw_snirf(paths["fNIRS"], preload=True, verbose=False)
@@ -276,11 +277,22 @@ def _(norobot_epochs, np, plt, robot_epochs):
 
 @app.cell
 def _(PROCESSED_DIR, data_files, mne, os, pl, preprocess, task_ids):
-    # --- Export epochs to wide CSV with sync metadata ---
-    # Paste this into a single marimo cell after you already have:
-    #   data_files, preprocess, task_ids, PROCESSED_DIR, mne, os, pl, re
+    # Export per-session fNIRS epochs to a single long-format CSV.
+    # Each row = one time sample within one epoch, with all HbO/HbR channel
+    # values and metadata (participant, task, condition, etc.).
 
     def parse_dataset_key(dataset_key):
+        """Extract participant name, run_id, and robot condition from a dataset key.
+
+        Parses keys like "sam_robot_1" or "clarence_norobot" into structured
+        components. The run_id is reformatted to "{participant}_{condition}_{num}".
+
+        Args:
+            dataset_key: Raw folder key from load_data() (e.g. "sam_robot_1").
+
+        Returns:
+            Tuple of (participant, run_id, is_robot).
+        """
         is_robot = "_robot_" in dataset_key and "_norobot_" not in dataset_key
 
         if "_norobot_" in dataset_key:
@@ -309,6 +321,21 @@ def _(PROCESSED_DIR, data_files, mne, os, pl, preprocess, task_ids):
 
 
     def build_event_metadata(events, dataset_key, task_id_map):
+        """Build a Polars DataFrame of event metadata from MNE event arrays.
+
+        Each row represents one task event with its dataset origin, participant,
+        condition, task label, and sample-level timing info.
+
+        Args:
+            events:      MNE events array (N×3: sample, duration, event_code).
+            dataset_key: Source session key (e.g. "sam_robot_1").
+            task_id_map: Dict mapping task names to event codes.
+
+        Returns:
+            Polars DataFrame with columns: dataset_key, participant, run_id,
+            is_robot, task, task_instance, epoch_index_in_dataset,
+            event_sample, event_code.
+        """
         participant, run_id, is_robot = parse_dataset_key(dataset_key)
         id_to_task = {v: k for k, v in task_id_map.items()}
 
@@ -335,6 +362,21 @@ def _(PROCESSED_DIR, data_files, mne, os, pl, preprocess, task_ids):
 
 
     def make_epochs_for_dataset(dataset_key, fnirs_path, preprocess, task_ids):
+        """Load one SNiRF file, preprocess, and extract task epochs.
+
+        Applies the full fNIRS pipeline (optical density → Beer-Lambert →
+        bad channel detection → bandpass filter), then creates epochs
+        time-locked to task events with artifact rejection.
+
+        Args:
+            dataset_key: Session key (e.g. "sam_robot_1").
+            fnirs_path:  Path to the .snirf file.
+            preprocess:  Preprocessing function (see preprocess() above).
+            task_ids:    Dict mapping task names to event codes.
+
+        Returns:
+            MNE Epochs object with metadata attached.
+        """
         raw = mne.io.read_raw_snirf(fnirs_path, preload=True, verbose=False)
         raw.resample(10.0)
 
@@ -365,6 +407,19 @@ def _(PROCESSED_DIR, data_files, mne, os, pl, preprocess, task_ids):
 
 
     def epochs_to_long(epochs):
+        """Reshape MNE Epochs from 3D (epochs × channels × times) to long format.
+
+        Each row is one time sample within one epoch, with all channel values
+        as columns. Metadata columns (participant, task, etc.) are duplicated
+        across time points for each epoch.
+
+        Args:
+            epochs: MNE Epochs object with attached metadata.
+
+        Returns:
+            Polars DataFrame in long format with time_sec, channel columns,
+            and all metadata columns.
+        """
         data = epochs.get_data()
         times = epochs.times
         ch_names = epochs.ch_names
