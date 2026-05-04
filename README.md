@@ -40,7 +40,7 @@ Requires Python ≥ 3.13.
 
 ```bash
 # Clone and install
-git clone https://github.com/BIOROB-Lab-192/Franka-DataCapture
+git clone [https://github.com/BIOROB-Lab-192/Franka-DataCapture](https://github.com/BIOROB-Lab-192/Franka-fNIRS-EMG-data_analysis)
 cd Franka-fNIRS-EMG-data_analysis
 uv sync
 ```
