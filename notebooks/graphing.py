@@ -74,7 +74,7 @@ def _(filter_rms, np, pl):
         Returns a new DataFrame with baseline-corrected columns."""
         _bl = (
             df.filter(pl.col(time_col) < baseline_end)
-            .group_by("run_id")
+            .group_by(["run_id", "task_instance"])
             .agg(
                 [
                     pl.col(c).drop_nulls().mean().alias(f"{c}_bl")
@@ -82,7 +82,7 @@ def _(filter_rms, np, pl):
                 ]
             )
         )
-        _result = df.join(_bl, on="run_id", how="left")
+        _result = df.join(_bl, on=["run_id", "task_instance"], how="left")
         for c in signal_cols:
             _result = _result.with_columns(
                 (pl.col(c) - pl.col(f"{c}_bl")).alias(c)
@@ -263,6 +263,16 @@ def _(filter_rms, np, pl):
             group_cols=("run_id", "task_instance"),
         )
 
+        out = out.with_columns(
+        [
+            pl.when(pl.col(c).is_nan())
+            .then(None)
+            .otherwise(pl.col(c))
+            .alias(c)
+            for c in emg_cols
+        ]
+    )
+
         return out
 
     return (
@@ -314,11 +324,11 @@ def _(fnirs_baseline_switch, fnirs_df, pl, plt):
         for _col in ["hbo_mean", "hbr_mean"]:
             _bl = (
                 fnirs_run_avg.filter(pl.col("time_sec") < 0)
-                .group_by("run_id")
+                .group_by(["run_id", "task_instance"])
                 .agg(pl.col(_col).mean().alias("_base"))
             )
             fnirs_run_avg = (
-                fnirs_run_avg.join(_bl, on="run_id", how="left")
+                fnirs_run_avg.join(_bl, on=["run_id", "task_instance"], how="left")
                 .with_columns((pl.col(_col) - pl.col("_base")).alias(_col))
                 .drop("_base")
             )
@@ -558,11 +568,11 @@ def _(
         for _col in fnirs_ch_selected:
             _bl = (
                 fnirs_ch_filtered.filter(pl.col("time_sec") < 0)
-                .group_by("run_id")
+                .group_by(["run_id", "task_instance"])
                 .agg(pl.col(_col).mean().alias("_base"))
             )
             fnirs_ch_filtered = (
-                fnirs_ch_filtered.join(_bl, on="run_id", how="left")
+                fnirs_ch_filtered.join(_bl, on=["run_id", "task_instance"], how="left")
                 .with_columns((pl.col(_col) - pl.col("_base")).alias(_col))
                 .drop("_base")
             )
@@ -975,11 +985,11 @@ def _(
         for _col in _emg_ov_cols:
             _bl = (
                 _emg_ov_run_avg.filter(pl.col("time_sec") < 0)
-                .group_by("run_id")
+                .group_by(["run_id", "task_instance"])
                 .agg(pl.col(_col).mean().alias("_base"))
             )
             _emg_ov_run_avg = (
-                _emg_ov_run_avg.join(_bl, on="run_id", how="left")
+                _emg_ov_run_avg.join(_bl, on=["run_id", "task_instance"], how="left")
                 .with_columns((pl.col(_col) - pl.col("_base")).alias(_col))
                 .drop("_base")
             )
@@ -1220,11 +1230,11 @@ def _(
         for _col in _emg_sp_selected:
             _bl = (
                 _emg_sp_filtered.filter(pl.col("time_sec") < 0)
-                .group_by("run_id")
+                .group_by(["run_id", "task_instance"])
                 .agg(pl.col(_col).mean().alias("_base"))
             )
             _emg_sp_filtered = (
-                _emg_sp_filtered.join(_bl, on="run_id", how="left")
+                _emg_sp_filtered.join(_bl, on=["run_id", "task_instance"], how="left")
                 .with_columns((pl.col(_col) - pl.col("_base")).alias(_col))
                 .drop("_base")
             )
