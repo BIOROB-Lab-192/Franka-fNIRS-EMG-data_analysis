@@ -21,8 +21,8 @@ import sys
 # ──────────────────────────── CONFIG ────────────────────────────
 
 DATA_PATH = Path("./data/processed/combined/data_packet/emg_rms.parquet")
-EXPORT_DIR = Path("./machine_learning/export")
-FIG_DIR = Path("./machine_learning/figures")
+EXPORT_DIR = Path("./machine_learning/EMG_perrun/export")
+FIG_DIR = Path("./machine_learning/EMG_perrun/figures")
 
 EMG_COLUMNS = [
     "Avanti Sensor 1 (82703) | EMG 1 (mV)",

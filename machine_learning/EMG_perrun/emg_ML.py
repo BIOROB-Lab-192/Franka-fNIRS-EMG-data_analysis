@@ -26,8 +26,8 @@ from datetime import datetime
 # ──────────────────────────── CONFIG ────────────────────────────
 
 DATA_PATH = Path("./data/processed/combined/data_packet/emg_rms.parquet")
-FIG_DIR = Path("./machine_learning/figures")
-EXPORT_DIR = Path("./machine_learning/export")
+FIG_DIR = Path("./machine_learning/EMG_perrun/figures")
+EXPORT_DIR = Path("./machine_learning/EMG_perrun/export")
 
 EMG_COLUMNS = [
     "Avanti Sensor 1 (82703) | EMG 1 (mV)",
