@@ -62,7 +62,7 @@ def _(np):
 
 
 @app.cell(hide_code=True)
-def _(pl):
+def _(filter_rms, pl):
     # Reusable helpers for all plots
     # Reuses: pl, np from imports cell
     import matplotlib.gridspec as gridspec
@@ -115,7 +115,24 @@ def _(pl):
             columnspacing=1.5,
         )
 
-    return Line2D, apply_baseline, build_legend, legend_layout
+
+    def filter_rms_per_epoch(emg_df):
+        """Apply filter_rms to each (run_id, task_instance) independently.
+        Avoids cross-epoch artifacts from sosfiltfilt."""
+        return pl.concat(
+            [
+                filter_rms(g.sort("time_sec"))
+                for _, g in emg_df.group_by("run_id", "task_instance")
+            ]
+        )
+
+    return (
+        Line2D,
+        apply_baseline,
+        build_legend,
+        filter_rms_per_epoch,
+        legend_layout,
+    )
 
 
 @app.cell(hide_code=True)
@@ -779,11 +796,20 @@ def emg_baseline_switch(mo):
 
 
 @app.cell(hide_code=True)
-def _(emg_baseline_switch, emg_df, emg_ov_filter_switch, filter_rms, pl, plt):
+def _(
+    emg_baseline_switch,
+    emg_df,
+    emg_ov_filter_switch,
+    filter_rms_per_epoch,
+    pl,
+    plt,
+):
     # EMG Aggregated: Robot vs No-Robot (Global Sensor Average)
     # Reuses: emg_df, pl, plt, np, filter_rms, emg_ov_filter_switch
 
-    _emg_src = filter_rms(emg_df) if emg_ov_filter_switch.value else emg_df
+    _emg_src = (
+        filter_rms_per_epoch(emg_df) if emg_ov_filter_switch.value else emg_df
+    )
     _ylabel = "EMG RMS (mV)" if emg_ov_filter_switch.value else "EMG (mV)"
 
     _emg_ov_TIME_MIN = -5.0
@@ -860,11 +886,13 @@ def _(emg_baseline_switch, emg_df, emg_ov_filter_switch, filter_rms, pl, plt):
 
 
 @app.cell(hide_code=True)
-def _(emg_df, emg_ov_filter_switch, filter_rms, mo, pl):
+def _(emg_df, emg_ov_filter_switch, filter_rms_per_epoch, mo, pl):
     # EMG Overall Summary Stats
     # Reuses: emg_df, pl, mo, filter_rms, emg_ov_filter_switch
 
-    _emg_src = filter_rms(emg_df) if emg_ov_filter_switch.value else emg_df
+    _emg_src = (
+        filter_rms_per_epoch(emg_df) if emg_ov_filter_switch.value else emg_df
+    )
 
     _emg_ov_sf = _emg_src.filter(
         (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") <= 15.0)
@@ -944,14 +972,16 @@ def _(
     emg_sens_filter_switch,
     emg_sensor_options,
     emg_sensor_selector,
-    filter_rms,
+    filter_rms_per_epoch,
     mo,
     pl,
 ):
     # EMG Sensor Plot Summary Stats
     # Reuses: emg_df, pl, mo, emg_sensor_selector, emg_sensor_options, filter_rms, emg_sens_filter_switch
 
-    _emg_src = filter_rms(emg_df) if emg_sens_filter_switch.value else emg_df
+    _emg_src = (
+        filter_rms_per_epoch(emg_df) if emg_sens_filter_switch.value else emg_df
+    )
 
     _emg_ss_sf = _emg_src.filter(
         (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") <= 15.0)
@@ -1008,7 +1038,7 @@ def _(
     emg_sens_filter_switch,
     emg_sensor_options,
     emg_sensor_selector,
-    filter_rms,
+    filter_rms_per_epoch,
     legend_layout,
     pl,
     plt,
@@ -1016,7 +1046,9 @@ def _(
     # EMG Per-Sensor Interactive Plot
     # Reuses: emg_df, pl, plt, np, Line2D, emg_sensor_selector, emg_sensor_options, filter_rms, emg_sens_filter_switch
 
-    _emg_src = filter_rms(emg_df) if emg_sens_filter_switch.value else emg_df
+    _emg_src = (
+        filter_rms_per_epoch(emg_df) if emg_sens_filter_switch.value else emg_df
+    )
     _ylabel = "EMG RMS (mV)" if emg_sens_filter_switch.value else "EMG (mV)"
 
     _emg_sp_TIME_MIN = -5.0
@@ -1139,11 +1171,20 @@ def _(emg_df, mo):
 
 
 @app.cell(hide_code=True)
-def _(emg_df, emg_task_filter_switch, emg_task_selector, filter_rms, mo, pl):
+def _(
+    emg_df,
+    emg_task_filter_switch,
+    emg_task_selector,
+    filter_rms_per_epoch,
+    mo,
+    pl,
+):
     # EMG Task Plot Summary Stats
     # Reuses: emg_df, pl, mo, emg_task_selector, filter_rms, emg_task_filter_switch
 
-    _emg_src = filter_rms(emg_df) if emg_task_filter_switch.value else emg_df
+    _emg_src = (
+        filter_rms_per_epoch(emg_df) if emg_task_filter_switch.value else emg_df
+    )
 
     _emg_ts_sf = _emg_src.filter(
         (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") <= 15.0)
@@ -1200,7 +1241,7 @@ def _(
     emg_df,
     emg_task_filter_switch,
     emg_task_selector,
-    filter_rms,
+    filter_rms_per_epoch,
     legend_layout,
     pl,
     plt,
@@ -1208,7 +1249,9 @@ def _(
     # EMG Per-Task Interactive Plot
     # Reuses: emg_df, pl, plt, np, Line2D, emg_task_selector, filter_rms, emg_task_filter_switch, apply_baseline
 
-    _emg_src = filter_rms(emg_df) if emg_task_filter_switch.value else emg_df
+    _emg_src = (
+        filter_rms_per_epoch(emg_df) if emg_task_filter_switch.value else emg_df
+    )
     _ylabel = "EMG RMS (mV)" if emg_task_filter_switch.value else "EMG (mV)"
 
     _emg_tp_TIME_MIN = -5.0
@@ -1489,7 +1532,7 @@ def _(
 @app.cell(hide_code=True)
 def _(
     emg_df,
-    filter_rms,
+    filter_rms_per_epoch,
     fnirs_df,
     np,
     pl,
@@ -1510,7 +1553,9 @@ def _(
     _pr_hbr_cols = [c for c in fnirs_df.columns if c.endswith("_hbr")]
 
     # Use filtered EMG if toggle is on
-    _pr_emg_for_plot = filter_rms(emg_df) if pr_filter_switch.value else emg_df
+    _pr_emg_for_plot = (
+        filter_rms_per_epoch(emg_df) if pr_filter_switch.value else emg_df
+    )
     _pr_emg_cols = [
         c for c in _pr_emg_for_plot.columns if "EMG" in c and c.endswith("(mV)")
     ]
