@@ -1529,12 +1529,6 @@ def _(fnirs_df, mo):
 
     pr_task_select = mo.ui.dropdown(options=pr_task_sorted, label="Task")
 
-    pr_robot_select = mo.ui.radio(
-        options=["Robot", "No-Robot"],
-        label="Condition",
-        value="Robot",
-    )
-
     pr_run_select = mo.ui.dropdown(
         options=sorted(fnirs_df["run_id"].unique().to_list()), label="Run"
     )
@@ -1548,19 +1542,12 @@ def _(fnirs_df, mo):
     mo.vstack(
         [
             pr_task_select,
-            pr_robot_select,
             pr_run_select,
             pr_baseline_switch,
             pr_filter_switch,
         ]
     )
-    return (
-        pr_baseline_switch,
-        pr_filter_switch,
-        pr_robot_select,
-        pr_run_select,
-        pr_task_select,
-    )
+    return pr_baseline_switch, pr_filter_switch, pr_run_select, pr_task_select
 
 
 @app.cell(hide_code=True)
@@ -1570,7 +1557,6 @@ def _(
     mo,
     pl,
     pr_filter_switch,
-    pr_robot_select,
     pr_run_select,
     pr_task_select,
     prepare_emg_for_analysis,
@@ -1586,7 +1572,6 @@ def _(
         _cond = (
             (pl.col("run_id") == pr_run_select.value)
             & (pl.col("task") == pr_task_select.value)
-            & (pl.col("is_robot") == (pr_robot_select.value == "Robot"))
         )
         _cond_post = _cond & (pl.col("time_sec") >= 0)
 
@@ -1618,7 +1603,7 @@ def _(
         )
 
         _lines.append(
-            f"**{_participant}** \u2014 {pr_run_select.value} \u2014 {pr_task_select.value} \u2014 {pr_robot_select.value}"
+            f"**{_participant}** \u2014 {pr_run_select.value} \u2014 {pr_task_select.value} \u2014"
         )
         _lines.append("")
 
@@ -1711,7 +1696,6 @@ def _(
     plt,
     pr_baseline_switch,
     pr_filter_switch,
-    pr_robot_select,
     pr_run_select,
     pr_task_select,
     prepare_emg_for_analysis,
@@ -1763,7 +1747,6 @@ def _(
         _cond_filter = (
             (pl.col("run_id") == pr_run_select.value)
             & (pl.col("task") == pr_task_select.value)
-            & (pl.col("is_robot") == (pr_robot_select.value == "Robot"))
             & (pl.col("time_sec") >= _pr_TIME_MIN)
             & (pl.col("time_sec") <= _pr_TIME_MAX)
         )
@@ -1890,7 +1873,7 @@ def _(
 
             _axes[0].axvline(x=0, color="gray", linestyle="--", alpha=0.5)
             _axes[0].set_title(
-                f"fNIRS \u2014 {pr_run_select.value} \u2014 {pr_task_select.value} \u2014 {pr_robot_select.value}"
+                f"fNIRS \u2014 {pr_run_select.value} \u2014 {pr_task_select.value} \u2014"
             )
 
             # EMG plots
