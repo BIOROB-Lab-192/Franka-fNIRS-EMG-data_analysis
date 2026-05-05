@@ -3,21 +3,6 @@ import marimo
 __generated_with = "0.23.3"
 app = marimo.App(width="medium")
 
-# ═══════════════════════════════════════════════════════════════
-# graphing.py — Multi-Sensor Visualization Dashboard
-# ═══════════════════════════════════════════════════════════════
-# Interactive marimo notebook for visualizing fNIRS and EMG data
-# from the combined data packet. Sections:
-#   1. Data loading
-#   2. Plot helpers (baseline correction, legend layout)
-#   3. fNIRS — aggregated, per-channel, per-task plots + stats
-#   4. EMG — aggregated, per-sensor, per-task plots + stats
-#   5. Per-run viewer — stacked fNIRS + EMG for individual epochs
-#
-# All plots support optional baseline correction (-5 to 0s).
-# Data loaded from data/processed/combined/data_packet/.
-# ═══════════════════════════════════════════════════════════════
-
 
 @app.cell
 def _():
@@ -25,8 +10,11 @@ def _():
     import matplotlib.pyplot as plt
     import polars as pl
     import numpy as np
+    import sys
+    sys.path.insert(0, "/Users/haider/code/Franka-fNIRS-EMG-data_analysis")
+    from src.loaders.emg_filtering import filter_rms
 
-    return mo, np, pl, plt
+    return filter_rms, mo, np, pl, plt
 
 
 @app.cell
@@ -783,176 +771,199 @@ def _(
 def emg_baseline_switch(mo):
     # ─── EMG Plots ─────────────────────────────────────────────
     emg_baseline_switch = mo.ui.switch(label="Baseline correction (-5 to 0s)")
-    emg_baseline_switch
-    return (emg_baseline_switch,)
+    emg_ov_filter_switch = mo.ui.switch(
+        label="Bandpass + RMS filter (20-450 Hz, 100 ms)"
+    )
+    [emg_baseline_switch, emg_ov_filter_switch]
+    return emg_baseline_switch, emg_ov_filter_switch
 
 
 @app.cell(hide_code=True)
-def _(emg_baseline_switch, emg_df, pl, plt):
+def _(emg_baseline_switch, emg_df, emg_ov_filter_switch, filter_rms, pl, plt):
     # EMG Aggregated: Robot vs No-Robot (Global Sensor Average)
-    # Reuses: emg_df, pl, plt, np from existing cells
+    # Reuses: emg_df, pl, plt, np, filter_rms, emg_ov_filter_switch
 
-    emg_ov_TIME_MIN = -5.0
-    emg_ov_TIME_MAX = 15.0
+    _emg_src = filter_rms(emg_df) if emg_ov_filter_switch.value else emg_df
+    _ylabel = "EMG RMS (mV)" if emg_ov_filter_switch.value else "EMG (mV)"
 
-    emg_ov_cols = [c for c in emg_df.columns if "EMG" in c and c.endswith("(mV)")]
+    _emg_ov_TIME_MIN = -5.0
+    _emg_ov_TIME_MAX = 15.0
 
-    emg_ov_filtered = emg_df.filter(
-        (pl.col("time_sec") >= emg_ov_TIME_MIN)
-        & (pl.col("time_sec") <= emg_ov_TIME_MAX)
+    _emg_ov_cols = [
+        c for c in _emg_src.columns if "EMG" in c and c.endswith("(mV)")
+    ]
+
+    _emg_ov_filtered = _emg_src.filter(
+        (pl.col("time_sec") >= _emg_ov_TIME_MIN)
+        & (pl.col("time_sec") <= _emg_ov_TIME_MAX)
     )
 
-    emg_ov_run_avg = emg_ov_filtered.with_columns(
-        pl.mean_horizontal(emg_ov_cols).alias("emg_mean")
+    _emg_ov_run_avg = _emg_ov_filtered.with_columns(
+        pl.mean_horizontal(_emg_ov_cols).alias("emg_mean")
     )
 
     # Baseline correction
     if emg_baseline_switch.value:
-        for _col in emg_ov_cols:
+        for _col in _emg_ov_cols:
             _bl = (
-                emg_ov_run_avg.filter(pl.col("time_sec") < 0)
+                _emg_ov_run_avg.filter(pl.col("time_sec") < 0)
                 .group_by("run_id")
                 .agg(pl.col(_col).mean().alias("_base"))
             )
-            emg_ov_run_avg = (
-                emg_ov_run_avg.join(_bl, on="run_id", how="left")
+            _emg_ov_run_avg = (
+                _emg_ov_run_avg.join(_bl, on="run_id", how="left")
                 .with_columns((pl.col(_col) - pl.col("_base")).alias(_col))
                 .drop("_base")
             )
-        # Recompute emg_mean after baseline correction
-        emg_ov_run_avg = emg_ov_run_avg.with_columns(
-            pl.mean_horizontal(emg_ov_cols).alias("emg_mean")
+        _emg_ov_run_avg = _emg_ov_run_avg.with_columns(
+            pl.mean_horizontal(_emg_ov_cols).alias("emg_mean")
         )
 
-    emg_ov_avg = (
-        emg_ov_run_avg.group_by("time_sec", "is_robot")
+    _emg_ov_avg = (
+        _emg_ov_run_avg.group_by("time_sec", "is_robot")
         .agg(pl.col("emg_mean").mean().alias("emg"))
         .sort("time_sec")
     )
 
-    emg_ov_robot = emg_ov_avg.filter(pl.col("is_robot") == True)
-    emg_ov_no_robot = emg_ov_avg.filter(pl.col("is_robot") == False)
+    _emg_ov_robot = _emg_ov_avg.filter(pl.col("is_robot") == True)
+    _emg_ov_no_robot = _emg_ov_avg.filter(pl.col("is_robot") == False)
 
-    emg_ov_fig, (emg_ov_ax1, emg_ov_ax2) = plt.subplots(1, 2, figsize=(14, 5))
+    _emg_ov_fig, (_emg_ov_ax1, _emg_ov_ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
-    emg_ov_ax1.plot(
-        emg_ov_robot["time_sec"], emg_ov_robot["emg"], color="tab:blue"
+    _emg_ov_ax1.plot(
+        _emg_ov_robot["time_sec"],
+        _emg_ov_robot["emg"],
+        color="tab:blue",
+        linewidth=0.8,
     )
-    emg_ov_ax1.set_title("Robot Trials")
-    emg_ov_ax1.set_xlabel("Time (s)")
-    emg_ov_ax1.set_ylabel("EMG (mV)")
-    emg_ov_ax1.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+    _emg_ov_ax1.set_title("Robot Trials")
+    _emg_ov_ax1.set_xlabel("Time (s)")
+    _emg_ov_ax1.set_ylabel(_ylabel)
+    _emg_ov_ax1.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
 
-    emg_ov_ax2.plot(
-        emg_ov_no_robot["time_sec"], emg_ov_no_robot["emg"], color="tab:orange"
+    _emg_ov_ax2.plot(
+        _emg_ov_no_robot["time_sec"],
+        _emg_ov_no_robot["emg"],
+        color="tab:orange",
+        linewidth=0.8,
     )
-    emg_ov_ax2.set_title("No-Robot Trials")
-    emg_ov_ax2.set_xlabel("Time (s)")
-    emg_ov_ax2.set_ylabel("EMG (mV)")
-    emg_ov_ax2.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+    _emg_ov_ax2.set_title("No-Robot Trials")
+    _emg_ov_ax2.set_xlabel("Time (s)")
+    _emg_ov_ax2.set_ylabel(_ylabel)
+    _emg_ov_ax2.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
 
     plt.tight_layout()
     plt.show()
 
-    emg_ov_fig
+    _emg_ov_fig
     return
 
 
 @app.cell(hide_code=True)
-def _(emg_df, mo, pl):
+def _(emg_df, emg_ov_filter_switch, filter_rms, mo, pl):
     # EMG Overall Summary Stats
-    # Reuses: emg_df, pl, mo from existing cells
+    # Reuses: emg_df, pl, mo, filter_rms, emg_ov_filter_switch
 
-    emg_ov_statsFiltered = emg_df.filter(
+    _emg_src = filter_rms(emg_df) if emg_ov_filter_switch.value else emg_df
+
+    _emg_ov_sf = _emg_src.filter(
         (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") <= 15.0)
     )
-    emg_ov_emg_cols = [
-        c for c in emg_df.columns if "EMG" in c and c.endswith("(mV)")
-    ]
-    emg_ov_bl = emg_ov_statsFiltered.filter(pl.col("time_sec") < 0)
+    _emg_ov_ec = [c for c in _emg_src.columns if "EMG" in c and c.endswith("(mV)")]
+    _emg_ov_bl = _emg_ov_sf.filter(pl.col("time_sec") < 0)
 
-    emg_ov_lines = []
+    _emg_ov_lines = []
     for _rob, _cond in [(True, "Robot"), (False, "No-Robot")]:
-        _cdf = emg_ov_statsFiltered.filter(pl.col("is_robot") == _rob)
+        _cdf = _emg_ov_sf.filter(pl.col("is_robot") == _rob)
         _runs = _cdf.select("run_id", "task_instance").unique().height
         _parts = _cdf["participant"].n_unique()
         _tasks = _cdf["task"].n_unique()
         _cdf_post = _cdf.filter(pl.col("time_sec") >= 0)
-        _ra = _cdf_post.with_columns(
-            pl.mean_horizontal(emg_ov_emg_cols).alias("_emg")
-        )
+        _ra = _cdf_post.with_columns(pl.mean_horizontal(_emg_ov_ec).alias("_emg"))
         _emg_m = _ra["_emg"].mean()
         _emg_x = _ra["_emg"].max()
-        # Baseline
-        _bl_cdf = emg_ov_bl.filter(pl.col("is_robot") == _rob)
-        _bl_ra = _bl_cdf.with_columns(
-            pl.mean_horizontal(emg_ov_emg_cols).alias("_emg")
-        )
+        _bl_cdf = _emg_ov_bl.filter(pl.col("is_robot") == _rob)
+        _bl_ra = _bl_cdf.with_columns(pl.mean_horizontal(_emg_ov_ec).alias("_emg"))
         _emg_bl = _bl_ra["_emg"].mean() if _bl_ra.height > 0 else 0.0
-        emg_ov_lines.append(
+        _emg_ov_lines.append(
             f"| {_cond} | {_runs} | {_parts} | {_tasks} | {_emg_m:.4f} | {_emg_x:.4f} | {_emg_bl:.4f} |"
         )
 
-    emg_ov_tbl = "| Condition | Epochs | Participants | Tasks | EMG Mean (mV) | EMG Max (mV) | EMG Baseline (mV) |\n"
-    emg_ov_tbl += "|-----------|--------|--------------|-------|---------------|--------------|-------------------|\n"
-    emg_ov_tbl += "\n".join(emg_ov_lines)
+    _emg_ov_tbl = "| Condition | Epochs | Participants | Tasks | EMG Mean (mV) | EMG Max (mV) | EMG Baseline (mV) |\n"
+    _emg_ov_tbl += "|-----------|--------|--------------|-------|---------------|--------------|-------------------|\n"
+    _emg_ov_tbl += "\n".join(_emg_ov_lines)
+
+    _fn = " (bandpass + RMS)" if emg_ov_filter_switch.value else ""
 
     mo.md(f"""
-    ### EMG Overall Summary
+    ### EMG Overall Summary{_fn}
 
     Global sensor average across all tasks, participants. Mean and max over 0\u201315s post-stimulus; baseline from \u22125 to 0s.
 
-    {emg_ov_tbl}
+    {_emg_ov_tbl}
     """)
     return
 
 
 @app.cell(hide_code=True)
 def _(emg_df, mo):
-    # EMG Sensor Selector Widget
-    # Reuses: mo, df from existing cells
+    # EMG Sensor Selector Widget + Filter Toggle
+    # Reuses: mo, emg_df from existing cells
 
-    emg_sensor_options = {}
+    _emg_sensor_options = {}
     for _c in emg_df.columns:
         if "EMG" in _c and _c.endswith("(mV)"):
-            # Clean label: "Avanti 1 (82703)" or "Duo 3 EMG1 (78042)"
             _parts = _c.split(" | ")
-            _sensor_full = _parts[0]  # "Avanti Sensor 1 (82703)"
-            _emg_ch = _parts[1].replace(" (mV)", "")  # "EMG 1" or "EMG 2"
-            # Extract short sensor name
+            _sensor_full = _parts[0]
+            _emg_ch = _parts[1].replace(" (mV)", "")
             _words = _sensor_full.split()
             _short = f"{_words[0]} {_words[2]} ({_words[3].strip('()')})"
             if "Duo" in _sensor_full:
                 _label = f"{_short} {_emg_ch}"
             else:
                 _label = _short
-            emg_sensor_options[_label] = _c
+            _emg_sensor_options[_label] = _c
+
+    emg_sensor_options = _emg_sensor_options
 
     emg_sensor_selector = mo.ui.multiselect(
         options=list(emg_sensor_options.keys()),
         value=list(emg_sensor_options.keys()),
         label="Select EMG sensors",
     )
-    emg_sensor_selector
-    return emg_sensor_options, emg_sensor_selector
+    emg_sens_filter_switch = mo.ui.switch(
+        label="Bandpass + RMS filter (20-450 Hz, 100 ms)"
+    )
+    [emg_sensor_selector, emg_sens_filter_switch]
+    return emg_sens_filter_switch, emg_sensor_options, emg_sensor_selector
 
 
 @app.cell(hide_code=True)
-def _(emg_df, emg_sensor_options, emg_sensor_selector, mo, pl):
+def _(
+    emg_df,
+    emg_sens_filter_switch,
+    emg_sensor_options,
+    emg_sensor_selector,
+    filter_rms,
+    mo,
+    pl,
+):
     # EMG Sensor Plot Summary Stats
-    # Reuses: emg_df, pl, mo, emg_sensor_selector, emg_sensor_options from existing cells
+    # Reuses: emg_df, pl, mo, emg_sensor_selector, emg_sensor_options, filter_rms, emg_sens_filter_switch
 
-    emg_sens_statsFiltered = emg_df.filter(
+    _emg_src = filter_rms(emg_df) if emg_sens_filter_switch.value else emg_df
+
+    _emg_ss_sf = _emg_src.filter(
         (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") <= 15.0)
     )
-    emg_sens_bl = emg_sens_statsFiltered.filter(pl.col("time_sec") < 0)
+    _emg_ss_bl = _emg_ss_sf.filter(pl.col("time_sec") < 0)
 
-    emg_sens_lines = []
+    _emg_ss_lines = []
     for _lbl in emg_sensor_selector.value:
         _col = emg_sensor_options[_lbl]
         for _rob, _cond in [(True, "Robot"), (False, "No-Robot")]:
             _vals = (
-                emg_sens_statsFiltered.filter(
+                _emg_ss_sf.filter(
                     (pl.col("is_robot") == _rob) & (pl.col("time_sec") >= 0)
                 )[_col]
                 .drop_nulls()
@@ -961,29 +972,29 @@ def _(emg_df, emg_sensor_options, emg_sensor_selector, mo, pl):
             if len(_vals) == 0:
                 continue
             _bl_vals = (
-                emg_sens_bl.filter(pl.col("is_robot") == _rob)[_col]
+                _emg_ss_bl.filter(pl.col("is_robot") == _rob)[_col]
                 .drop_nulls()
                 .to_numpy()
             )
             _bl_mean = _bl_vals.mean() if len(_bl_vals) > 0 else 0.0
-            emg_sens_lines.append(
+            _emg_ss_lines.append(
                 f"| {_lbl} | {_cond} | {_vals.mean():.4f} | {_vals.max():.4f} | {_bl_mean:.4f} |"
             )
 
-    emg_sens_tbl = (
-        "| Sensor | Condition | Mean (mV) | Max (mV) | Baseline (mV) |\n"
-    )
-    emg_sens_tbl += (
+    _emg_ss_tbl = "| Sensor | Condition | Mean (mV) | Max (mV) | Baseline (mV) |\n"
+    _emg_ss_tbl += (
         "|--------|-----------|-----------|----------|---------------|\n"
     )
-    emg_sens_tbl += "\n".join(emg_sens_lines)
+    _emg_ss_tbl += "\n".join(_emg_ss_lines)
+
+    _fn = " (bandpass + RMS)" if emg_sens_filter_switch.value else ""
 
     mo.md(f"""
-    ### EMG Per-Sensor Summary
+    ### EMG Per-Sensor Summary{_fn}
 
     Mean and max EMG (mV) per sensor, across all runs (0\u201315s post-stimulus).
 
-    {emg_sens_tbl}
+    {_emg_ss_tbl}
     """)
     return
 
@@ -994,121 +1005,124 @@ def _(
     build_legend,
     emg_baseline_switch,
     emg_df,
+    emg_sens_filter_switch,
     emg_sensor_options,
     emg_sensor_selector,
+    filter_rms,
     legend_layout,
     pl,
     plt,
 ):
     # EMG Per-Sensor Interactive Plot
-    # Reuses: emg_df, pl, plt, np, Line2D from existing cells
+    # Reuses: emg_df, pl, plt, np, Line2D, emg_sensor_selector, emg_sensor_options, filter_rms, emg_sens_filter_switch
 
-    emg_sens_TIME_MIN = -5.0
-    emg_sens_TIME_MAX = 15.0
+    _emg_src = filter_rms(emg_df) if emg_sens_filter_switch.value else emg_df
+    _ylabel = "EMG RMS (mV)" if emg_sens_filter_switch.value else "EMG (mV)"
 
-    emg_sens_filtered = emg_df.filter(
-        (pl.col("time_sec") >= emg_sens_TIME_MIN)
-        & (pl.col("time_sec") <= emg_sens_TIME_MAX)
+    _emg_sp_TIME_MIN = -5.0
+    _emg_sp_TIME_MAX = 15.0
+
+    _emg_sp_filtered = _emg_src.filter(
+        (pl.col("time_sec") >= _emg_sp_TIME_MIN)
+        & (pl.col("time_sec") <= _emg_sp_TIME_MAX)
     )
 
-    emg_sens_selected = [
+    _emg_sp_selected = [
         emg_sensor_options[_ch] for _ch in emg_sensor_selector.value
     ]
 
     # Baseline correction
     if emg_baseline_switch.value:
-        for _col in emg_sens_selected:
+        for _col in _emg_sp_selected:
             _bl = (
-                emg_sens_filtered.filter(pl.col("time_sec") < 0)
+                _emg_sp_filtered.filter(pl.col("time_sec") < 0)
                 .group_by("run_id")
                 .agg(pl.col(_col).mean().alias("_base"))
             )
-            emg_sens_filtered = (
-                emg_sens_filtered.join(_bl, on="run_id", how="left")
+            _emg_sp_filtered = (
+                _emg_sp_filtered.join(_bl, on="run_id", how="left")
                 .with_columns((pl.col(_col) - pl.col("_base")).alias(_col))
                 .drop("_base")
             )
 
-    if not emg_sens_selected:
-        emg_sens_fig, _ax = plt.subplots(figsize=(14, 5))
+    if not _emg_sp_selected:
+        _emg_sp_fig, _ax = plt.subplots(figsize=(14, 5))
         _ax.text(
             0.5, 0.5, "No sensors selected", ha="center", va="center", fontsize=14
         )
         _ax.set_axis_off()
         plt.show()
     else:
-        emg_sens_robot = {}
-        emg_sens_no_robot = {}
+        _emg_sp_robot = {}
+        _emg_sp_no_robot = {}
 
-        for _col in emg_sens_selected:
+        for _col in _emg_sp_selected:
             _avg = (
-                emg_sens_filtered.group_by("time_sec", "is_robot")
+                _emg_sp_filtered.group_by("time_sec", "is_robot")
                 .agg(pl.col(_col).mean().alias("val"))
                 .sort("time_sec")
             )
-            emg_sens_robot[_col] = _avg.filter(pl.col("is_robot") == True)
-            emg_sens_no_robot[_col] = _avg.filter(pl.col("is_robot") == False)
+            _emg_sp_robot[_col] = _avg.filter(pl.col("is_robot") == True)
+            _emg_sp_no_robot[_col] = _avg.filter(pl.col("is_robot") == False)
 
-        # One unique color per sensor
-        _n_sens = len(emg_sens_selected)
+        _n_sens = len(_emg_sp_selected)
         _cmap = plt.cm.tab10 if _n_sens <= 10 else plt.cm.tab20
-        emg_sens_colors = {
+        _emg_sp_colors = {
             _c: _cmap(_i / max(_n_sens - 1, 1))
-            for _i, _c in enumerate(emg_sens_selected)
+            for _i, _c in enumerate(_emg_sp_selected)
         }
 
-        emg_sens_fig, (emg_sens_ax1, emg_sens_ax2) = plt.subplots(
+        _emg_sp_fig, (_emg_sp_ax1, _emg_sp_ax2) = plt.subplots(
             1, 2, figsize=(14, 5)
         )
 
         for _lbl in emg_sensor_selector.value:
             _col = emg_sensor_options[_lbl]
-            _c = emg_sens_colors[_col]
-            emg_sens_ax1.plot(
-                emg_sens_robot[_col]["time_sec"].to_numpy(),
-                emg_sens_robot[_col]["val"].to_numpy(),
+            _c = _emg_sp_colors[_col]
+            _emg_sp_ax1.plot(
+                _emg_sp_robot[_col]["time_sec"].to_numpy(),
+                _emg_sp_robot[_col]["val"].to_numpy(),
                 color=_c,
                 label=_lbl,
-                linewidth=0.5,
+                linewidth=0.8,
             )
-            emg_sens_ax2.plot(
-                emg_sens_no_robot[_col]["time_sec"].to_numpy(),
-                emg_sens_no_robot[_col]["val"].to_numpy(),
+            _emg_sp_ax2.plot(
+                _emg_sp_no_robot[_col]["time_sec"].to_numpy(),
+                _emg_sp_no_robot[_col]["val"].to_numpy(),
                 color=_c,
                 label=_lbl,
-                linewidth=0.5,
+                linewidth=0.8,
             )
 
-        emg_sens_ax1.set_title("Robot Trials")
-        emg_sens_ax1.set_xlabel("Time (s)")
-        emg_sens_ax1.set_ylabel("EMG (mV)")
-        emg_sens_ax1.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+        _emg_sp_ax1.set_title("Robot Trials")
+        _emg_sp_ax1.set_xlabel("Time (s)")
+        _emg_sp_ax1.set_ylabel(_ylabel)
+        _emg_sp_ax1.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
 
-        emg_sens_ax2.set_title("No-Robot Trials")
-        emg_sens_ax2.set_xlabel("Time (s)")
-        emg_sens_ax2.set_ylabel("EMG (mV)")
-        emg_sens_ax2.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+        _emg_sp_ax2.set_title("No-Robot Trials")
+        _emg_sp_ax2.set_xlabel("Time (s)")
+        _emg_sp_ax2.set_ylabel(_ylabel)
+        _emg_sp_ax2.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
 
-        # Legend
         _legend_handles = []
         for _lbl in emg_sensor_selector.value:
             _col = emg_sensor_options[_lbl]
-            _c = emg_sens_colors[_col]
+            _c = _emg_sp_colors[_col]
             _legend_handles.append(Line2D([0], [0], color=_c, label=_lbl))
 
-        legend_layout(emg_sens_fig, len(_legend_handles))
-        build_legend(emg_sens_fig, _legend_handles)
+        legend_layout(_emg_sp_fig, len(_legend_handles))
+        build_legend(_emg_sp_fig, _legend_handles)
 
         plt.show()
 
-    emg_sens_fig
+    _emg_sp_fig
     return
 
 
 @app.cell(hide_code=True)
 def _(emg_df, mo):
-    # EMG Task Selector Widget
-    # Reuses: mo, df from existing cells
+    # EMG Task Selector Widget + Filter Toggle
+    # Reuses: mo, emg_df from existing cells
 
     _emg_task_sorted = sorted(
         emg_df["task"].unique().to_list(), key=lambda _x: int(_x.split("_")[1])
@@ -1117,27 +1131,30 @@ def _(emg_df, mo):
     emg_task_selector = mo.ui.multiselect(
         options=_emg_task_sorted, value=_emg_task_sorted, label="Select tasks"
     )
-    emg_task_selector
-    return (emg_task_selector,)
+    emg_task_filter_switch = mo.ui.switch(
+        label="Bandpass + RMS filter (20-450 Hz, 100 ms)"
+    )
+    [emg_task_selector, emg_task_filter_switch]
+    return emg_task_filter_switch, emg_task_selector
 
 
 @app.cell(hide_code=True)
-def _(emg_df, emg_task_selector, mo, pl):
+def _(emg_df, emg_task_filter_switch, emg_task_selector, filter_rms, mo, pl):
     # EMG Task Plot Summary Stats
-    # Reuses: emg_df, pl, mo, emg_task_selector from existing cells
+    # Reuses: emg_df, pl, mo, emg_task_selector, filter_rms, emg_task_filter_switch
 
-    emg_task_statsFiltered = emg_df.filter(
+    _emg_src = filter_rms(emg_df) if emg_task_filter_switch.value else emg_df
+
+    _emg_ts_sf = _emg_src.filter(
         (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") <= 15.0)
     )
-    emg_task_emg_cols_s = [
-        c for c in emg_df.columns if "EMG" in c and c.endswith("(mV)")
-    ]
-    emg_task_bl = emg_task_statsFiltered.filter(pl.col("time_sec") < 0)
+    _emg_ts_ec = [c for c in _emg_src.columns if "EMG" in c and c.endswith("(mV)")]
+    _emg_ts_bl = _emg_ts_sf.filter(pl.col("time_sec") < 0)
 
-    emg_task_lines = []
+    _emg_ts_lines = []
     for _task in emg_task_selector.value:
-        _tdf = emg_task_statsFiltered.filter(pl.col("task") == _task)
-        _bl_tdf = emg_task_bl.filter(pl.col("task") == _task)
+        _tdf = _emg_ts_sf.filter(pl.col("task") == _task)
+        _bl_tdf = _emg_ts_bl.filter(pl.col("task") == _task)
         for _rob, _lbl in [(True, "Robot"), (False, "No-Robot")]:
             _cdf = _tdf.filter(pl.col("is_robot") == _rob)
             _epochs = _cdf.select("run_id", "task_instance").unique().height
@@ -1145,30 +1162,31 @@ def _(emg_df, emg_task_selector, mo, pl):
                 continue
             _cdf_post = _cdf.filter(pl.col("time_sec") >= 0)
             _ra = _cdf_post.with_columns(
-                pl.mean_horizontal(emg_task_emg_cols_s).alias("_emg")
+                pl.mean_horizontal(_emg_ts_ec).alias("_emg")
             )
             _emg_m = _ra["_emg"].mean()
             _emg_x = _ra["_emg"].max()
-            # Baseline
             _bl_cdf = _bl_tdf.filter(pl.col("is_robot") == _rob)
             _bl_ra = _bl_cdf.with_columns(
-                pl.mean_horizontal(emg_task_emg_cols_s).alias("_emg")
+                pl.mean_horizontal(_emg_ts_ec).alias("_emg")
             )
             _emg_bl = _bl_ra["_emg"].mean() if _bl_ra.height > 0 else 0.0
-            emg_task_lines.append(
+            _emg_ts_lines.append(
                 f"| {_task} | {_lbl} | {_epochs} | {_emg_m:.4f} | {_emg_x:.4f} | {_emg_bl:.4f} |"
             )
 
-    emg_task_tbl = "| Task | Condition | Epochs | EMG Mean (mV) | EMG Max (mV) | EMG Baseline (mV) |\n"
-    emg_task_tbl += "|------|-----------|--------|---------------|--------------|-------------------|\n"
-    emg_task_tbl += "\n".join(emg_task_lines)
+    _emg_ts_tbl = "| Task | Condition | Epochs | EMG Mean (mV) | EMG Max (mV) | EMG Baseline (mV) |\n"
+    _emg_ts_tbl += "|------|-----------|--------|---------------|--------------|-------------------|\n"
+    _emg_ts_tbl += "\n".join(_emg_ts_lines)
+
+    _fn = " (bandpass + RMS)" if emg_task_filter_switch.value else ""
 
     mo.md(f"""
-    ### EMG Per-Task Summary
+    ### EMG Per-Task Summary{_fn}
 
     Mean and max EMG (mV) of the global sensor average, across all runs per task and condition (0\u201315s post-stimulus).
 
-    {emg_task_tbl}
+    {_emg_ts_tbl}
     """)
     return
 
@@ -1180,44 +1198,47 @@ def _(
     build_legend,
     emg_baseline_switch,
     emg_df,
+    emg_task_filter_switch,
     emg_task_selector,
+    filter_rms,
     legend_layout,
     pl,
     plt,
 ):
     # EMG Per-Task Interactive Plot
-    # Reuses: emg_df, pl, plt, np, Line2D from existing cells
+    # Reuses: emg_df, pl, plt, np, Line2D, emg_task_selector, filter_rms, emg_task_filter_switch, apply_baseline
 
-    emg_task_TIME_MIN = -5.0
-    emg_task_TIME_MAX = 15.0
+    _emg_src = filter_rms(emg_df) if emg_task_filter_switch.value else emg_df
+    _ylabel = "EMG RMS (mV)" if emg_task_filter_switch.value else "EMG (mV)"
 
-    emg_task_filtered = emg_df.filter(
-        (pl.col("time_sec") >= emg_task_TIME_MIN)
-        & (pl.col("time_sec") <= emg_task_TIME_MAX)
+    _emg_tp_TIME_MIN = -5.0
+    _emg_tp_TIME_MAX = 15.0
+
+    _emg_tp_filtered = _emg_src.filter(
+        (pl.col("time_sec") >= _emg_tp_TIME_MIN)
+        & (pl.col("time_sec") <= _emg_tp_TIME_MAX)
     )
 
-    emg_task_emg_cols = [
-        c for c in emg_df.columns if "EMG" in c and c.endswith("(mV)")
-    ]
+    _emg_tp_ec = [c for c in _emg_src.columns if "EMG" in c and c.endswith("(mV)")]
 
-    emg_task_selected = emg_task_selector.value
+    _emg_tp_selected = emg_task_selector.value
 
-    if not emg_task_selected:
-        emg_task_fig, _ax = plt.subplots(figsize=(14, 5))
+    if not _emg_tp_selected:
+        _emg_tp_fig, _ax = plt.subplots(figsize=(14, 5))
         _ax.text(
             0.5, 0.5, "No tasks selected", ha="center", va="center", fontsize=14
         )
         _ax.set_axis_off()
         plt.show()
     else:
-        emg_task_robot = {}
-        emg_task_no_robot = {}
+        _emg_tp_robot = {}
+        _emg_tp_no_robot = {}
 
-        for _task in emg_task_selected:
-            _task_df = emg_task_filtered.filter(pl.col("task") == _task)
+        for _task in _emg_tp_selected:
+            _task_df = _emg_tp_filtered.filter(pl.col("task") == _task)
 
             _task_run_avg = _task_df.with_columns(
-                pl.mean_horizontal(emg_task_emg_cols).alias("emg_mean")
+                pl.mean_horizontal(_emg_tp_ec).alias("emg_mean")
             )
 
             # Baseline correction
@@ -1230,61 +1251,58 @@ def _(
                 .sort("time_sec")
             )
 
-            emg_task_robot[_task] = _task_avg.filter(pl.col("is_robot") == True)
-            emg_task_no_robot[_task] = _task_avg.filter(
-                pl.col("is_robot") == False
-            )
+            _emg_tp_robot[_task] = _task_avg.filter(pl.col("is_robot") == True)
+            _emg_tp_no_robot[_task] = _task_avg.filter(pl.col("is_robot") == False)
 
-        _n_tasks = len(emg_task_selected)
+        _n_tasks = len(_emg_tp_selected)
         _cmap = plt.cm.tab10 if _n_tasks <= 10 else plt.cm.tab20
-        emg_task_colors = {
+        _emg_tp_colors = {
             _t: _cmap(_i / max(_n_tasks - 1, 1))
-            for _i, _t in enumerate(emg_task_selected)
+            for _i, _t in enumerate(_emg_tp_selected)
         }
 
-        emg_task_fig, (emg_task_ax1, emg_task_ax2) = plt.subplots(
+        _emg_tp_fig, (_emg_tp_ax1, _emg_tp_ax2) = plt.subplots(
             1, 2, figsize=(14, 5)
         )
 
-        for _task in emg_task_selected:
-            _c = emg_task_colors[_task]
-            emg_task_ax1.plot(
-                emg_task_robot[_task]["time_sec"].to_numpy(),
-                emg_task_robot[_task]["emg"].to_numpy(),
+        for _task in _emg_tp_selected:
+            _c = _emg_tp_colors[_task]
+            _emg_tp_ax1.plot(
+                _emg_tp_robot[_task]["time_sec"].to_numpy(),
+                _emg_tp_robot[_task]["emg"].to_numpy(),
                 color=_c,
                 label=_task,
-                linewidth=0.5,
+                linewidth=0.8,
             )
-            emg_task_ax2.plot(
-                emg_task_no_robot[_task]["time_sec"].to_numpy(),
-                emg_task_no_robot[_task]["emg"].to_numpy(),
+            _emg_tp_ax2.plot(
+                _emg_tp_no_robot[_task]["time_sec"].to_numpy(),
+                _emg_tp_no_robot[_task]["emg"].to_numpy(),
                 color=_c,
                 label=_task,
-                linewidth=0.5,
+                linewidth=0.8,
             )
 
-        emg_task_ax1.set_title("Robot Trials")
-        emg_task_ax1.set_xlabel("Time (s)")
-        emg_task_ax1.set_ylabel("EMG (mV)")
-        emg_task_ax1.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+        _emg_tp_ax1.set_title("Robot Trials")
+        _emg_tp_ax1.set_xlabel("Time (s)")
+        _emg_tp_ax1.set_ylabel(_ylabel)
+        _emg_tp_ax1.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
 
-        emg_task_ax2.set_title("No-Robot Trials")
-        emg_task_ax2.set_xlabel("Time (s)")
-        emg_task_ax2.set_ylabel("EMG (mV)")
-        emg_task_ax2.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+        _emg_tp_ax2.set_title("No-Robot Trials")
+        _emg_tp_ax2.set_xlabel("Time (s)")
+        _emg_tp_ax2.set_ylabel(_ylabel)
+        _emg_tp_ax2.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
 
-        # Legend
         _legend_handles = []
-        for _task in emg_task_selected:
-            _c = emg_task_colors[_task]
+        for _task in _emg_tp_selected:
+            _c = _emg_tp_colors[_task]
             _legend_handles.append(Line2D([0], [0], color=_c, label=_task))
 
-        legend_layout(emg_task_fig, len(_legend_handles))
-        build_legend(emg_task_fig, _legend_handles)
+        legend_layout(_emg_tp_fig, len(_legend_handles))
+        build_legend(_emg_tp_fig, _legend_handles)
 
         plt.show()
 
-    emg_task_fig
+    _emg_tp_fig
     return
 
 
@@ -1311,28 +1329,43 @@ def _(fnirs_df, mo):
     )
 
     pr_baseline_switch = mo.ui.switch(label="Baseline correction (-5 to 0s)")
+    pr_filter_switch = mo.ui.switch(
+        label="Bandpass + RMS filter (20-450 Hz, 100 ms)"
+    )
 
     mo.md("### Per-Run Viewer")
-    mo.vstack([pr_task_select, pr_robot_select, pr_run_select, pr_baseline_switch])
-    return pr_baseline_switch, pr_robot_select, pr_run_select, pr_task_select
+    mo.vstack(
+        [
+            pr_task_select,
+            pr_robot_select,
+            pr_run_select,
+            pr_baseline_switch,
+            pr_filter_switch,
+        ]
+    )
+    return (
+        pr_baseline_switch,
+        pr_filter_switch,
+        pr_robot_select,
+        pr_run_select,
+        pr_task_select,
+    )
 
 
 @app.cell(hide_code=True)
 def _(
     emg_df,
+    filter_rms,
     fnirs_df,
     mo,
     pl,
-    pr_emg_cols,
-    pr_emg_labels,
-    pr_hbo_cols,
-    pr_hbr_cols,
+    pr_filter_switch,
     pr_robot_select,
     pr_run_select,
     pr_task_select,
 ):
     # Per-Run Viewer Summary Stats
-    # Reuses: fnirs_df, emg_df, pr_task_select, pr_robot_select, pr_run_select from existing cells
+    # Reuses: fnirs_df, emg_df, pr_task_select, pr_robot_select, pr_run_select, pr_baseline_switch, pr_filter_switch, filter_rms
 
     _lines = []
 
@@ -1347,9 +1380,11 @@ def _(
         _cond_post = _cond & (pl.col("time_sec") >= 0)
 
         _r_fnirs = fnirs_df.filter(_cond)
-        _r_emg = emg_df.filter(_cond)
-        _r_fnirs_post = fnirs_df.filter(_cond_post)
-        _r_emg_post = emg_df.filter(_cond_post)
+
+        # Apply filter to EMG if toggle is on
+        _emg_for_stats = filter_rms(emg_df) if pr_filter_switch.value else emg_df
+        _r_emg = _emg_for_stats.filter(_cond)
+        _r_emg_post = _emg_for_stats.filter(_cond_post)
 
         _fnirs_freq = "10 Hz"
         _emg_freq = "N/A"
@@ -1372,13 +1407,18 @@ def _(
         _lines.append("")
 
         # fNIRS stats
+        _pr_hbo_cols = [c for c in fnirs_df.columns if c.endswith("_hbo")]
+        _pr_hbr_cols = [c for c in fnirs_df.columns if c.endswith("_hbr")]
+        _r_fnirs_post = fnirs_df.filter(_cond_post)
+
         _fnirs_n = 0
-        if _r_fnirs_post.height > 0 and len(pr_hbo_cols) > 0:
+        _hbo_mean = _hbo_peak = _hbr_mean = _hbr_peak = 0.0
+        if _r_fnirs_post.height > 0 and len(_pr_hbo_cols) > 0:
             _hbo_vals = _r_fnirs_post.select(
-                pl.mean_horizontal(pr_hbo_cols)
+                pl.mean_horizontal(_pr_hbo_cols)
             ).drop_nulls()
             _hbr_vals = _r_fnirs_post.select(
-                pl.mean_horizontal(pr_hbr_cols)
+                pl.mean_horizontal(_pr_hbr_cols)
             ).drop_nulls()
             if len(_hbo_vals) > 0:
                 _hbo_mean = _hbo_vals.mean().item() * 1e6
@@ -1403,18 +1443,28 @@ def _(
         _lines.append("")
 
         # EMG stats
+        _pr_emg_cols = [
+            c for c in _emg_for_stats.columns if "EMG" in c and c.endswith("(mV)")
+        ]
         _emg_n = 0
-        if _r_emg_post.height > 0 and len(pr_emg_cols) > 0:
+        if _r_emg_post.height > 0 and len(_pr_emg_cols) > 0:
             _emg_n = _r_emg_post.height
 
+        _fn = " (filtered)" if pr_filter_switch.value else ""
         _lines.append(
-            f"**EMG** ({_emg_freq}{', ' + f'{_emg_n:,}' + ' post-stimulus samples' if _emg_n > 0 else ''})"
+            f"**EMG{_fn}** ({_emg_freq}{', ' + f'{_emg_n:,}' + ' post-stimulus samples' if _emg_n > 0 else ''})"
         )
         _lines.append("")
         _lines.append("| Sensor | Mean (mV) | Peak (mV) |")
         _lines.append("|--------|-----------|-----------|")
         if _emg_n > 0:
-            for _col, _lbl in zip(pr_emg_cols, pr_emg_labels):
+            for _col in _pr_emg_cols:
+                _parts = _col.split(" | ")
+                _sensor_name = _parts[0]
+                _emg_ch = (
+                    _parts[1].replace(" (mV)", "") if len(_parts) > 1 else _col
+                )
+                _lbl = f"{_sensor_name} {_emg_ch}"
                 _vals = _r_emg_post[_col].drop_nulls()
                 if len(_vals) > 0:
                     _m = _vals.mean()
@@ -1423,7 +1473,13 @@ def _(
                 else:
                     _lines.append(f"| {_lbl} | \u2014 | \u2014 |")
         else:
-            for _lbl in pr_emg_labels:
+            for _col in _pr_emg_cols:
+                _parts = _col.split(" | ")
+                _sensor_name = _parts[0]
+                _emg_ch = (
+                    _parts[1].replace(" (mV)", "") if len(_parts) > 1 else _col
+                )
+                _lbl = f"{_sensor_name} {_emg_ch}"
                 _lines.append(f"| {_lbl} | \u2014 | \u2014 |")
 
     mo.md("\n".join(_lines))
@@ -1433,32 +1489,41 @@ def _(
 @app.cell(hide_code=True)
 def _(
     emg_df,
+    filter_rms,
     fnirs_df,
     np,
     pl,
     plt,
     pr_baseline_switch,
+    pr_filter_switch,
     pr_robot_select,
     pr_run_select,
     pr_task_select,
 ):
     # Per-Run Viewer Plot
-    # Reuses: fnirs_df, emg_df, pl, plt, np from existing cells
+    # Reuses: fnirs_df, emg_df, pl, plt, np, pr_task_select, pr_robot_select, pr_run_select, pr_baseline_switch, pr_filter_switch, filter_rms
 
-    pr_TIME_MIN = -5.0
-    pr_TIME_MAX = 15.0
+    _pr_TIME_MIN = -5.0
+    _pr_TIME_MAX = 15.0
 
-    pr_hbo_cols = [c for c in fnirs_df.columns if c.endswith("_hbo")]
-    pr_hbr_cols = [c for c in fnirs_df.columns if c.endswith("_hbr")]
-    pr_emg_cols = [c for c in emg_df.columns if "EMG" in c and c.endswith("(mV)")]
+    _pr_hbo_cols = [c for c in fnirs_df.columns if c.endswith("_hbo")]
+    _pr_hbr_cols = [c for c in fnirs_df.columns if c.endswith("_hbr")]
 
-    # EMG labels — full sensor names
-    pr_emg_labels = []
-    for _c in pr_emg_cols:
+    # Use filtered EMG if toggle is on
+    _pr_emg_for_plot = filter_rms(emg_df) if pr_filter_switch.value else emg_df
+    _pr_emg_cols = [
+        c for c in _pr_emg_for_plot.columns if "EMG" in c and c.endswith("(mV)")
+    ]
+
+    # EMG labels
+    _pr_emg_labels = []
+    for _c in _pr_emg_cols:
         _parts = _c.split(" | ")
         _sensor_name = _parts[0]
         _emg_ch = _parts[1].replace(" (mV)", "") if len(_parts) > 1 else _c
-        pr_emg_labels.append(f"{_sensor_name} {_emg_ch}")
+        _pr_emg_labels.append(f"{_sensor_name} {_emg_ch}")
+
+    _ylabel_emg = "EMG RMS (mV)" if pr_filter_switch.value else "EMG (mV)"
 
     if pr_run_select.value is None or pr_task_select.value is None:
         pr_fig, _ax = plt.subplots(figsize=(14, 3))
@@ -1478,12 +1543,12 @@ def _(
             (pl.col("run_id") == pr_run_select.value)
             & (pl.col("task") == pr_task_select.value)
             & (pl.col("is_robot") == (pr_robot_select.value == "Robot"))
-            & (pl.col("time_sec") >= pr_TIME_MIN)
-            & (pl.col("time_sec") <= pr_TIME_MAX)
+            & (pl.col("time_sec") >= _pr_TIME_MIN)
+            & (pl.col("time_sec") <= _pr_TIME_MAX)
         )
 
         _run_fnirs = fnirs_df.filter(_cond_filter).sort("time_sec")
-        _run_emg = emg_df.filter(_cond_filter).sort("time_sec")
+        _run_emg = _pr_emg_for_plot.filter(_cond_filter).sort("time_sec")
 
         if _run_fnirs.height == 0 and _run_emg.height == 0:
             pr_fig, _ax = plt.subplots(figsize=(14, 3))
@@ -1503,8 +1568,8 @@ def _(
             # fNIRS
             # ============================================================
             if (
-                len(pr_hbo_cols) == 0
-                or len(pr_hbr_cols) == 0
+                len(_pr_hbo_cols) == 0
+                or len(_pr_hbr_cols) == 0
                 or _run_fnirs.height == 0
             ):
                 _has_fnirs = False
@@ -1517,8 +1582,8 @@ def _(
                 _fnirs_df_plot = (
                     _run_fnirs.with_columns(
                         [
-                            pl.mean_horizontal(pr_hbo_cols).alias("HbO"),
-                            pl.mean_horizontal(pr_hbr_cols).alias("HbR"),
+                            pl.mean_horizontal(_pr_hbo_cols).alias("HbO"),
+                            pl.mean_horizontal(_pr_hbr_cols).alias("HbR"),
                         ]
                     )
                     .group_by("time_sec")
@@ -1550,7 +1615,7 @@ def _(
             # EMG
             # ============================================================
             _emg_data = {}
-            for _col in pr_emg_cols:
+            for _col in _pr_emg_cols:
                 _emg_s = (
                     _run_emg.select(["time_sec", _col])
                     .group_by("time_sec")
@@ -1570,8 +1635,8 @@ def _(
             # ============================================================
             # Figure
             # ============================================================
-            _n_emg = len(pr_emg_cols)
-            _fig, _axes = plt.subplots(
+            _n_emg = len(_pr_emg_cols)
+            pr_fig, _axes = plt.subplots(
                 _n_emg + 1,
                 1,
                 figsize=(14, 2.5 * (_n_emg + 1)),
@@ -1589,7 +1654,7 @@ def _(
                 _axes[0].plot(
                     _fnirs_time, _hbr, label="HbR", color="blue", linewidth=1.2
                 )
-                _axes[0].set_ylabel("Concentration (μM)")
+                _axes[0].set_ylabel("Concentration (\u03bcM)")
                 _axes[0].legend(loc="upper right", fontsize=8)
             else:
                 _axes[0].text(
@@ -1604,11 +1669,11 @@ def _(
 
             _axes[0].axvline(x=0, color="gray", linestyle="--", alpha=0.5)
             _axes[0].set_title(
-                f"fNIRS — {pr_run_select.value} — {pr_task_select.value} — {pr_robot_select.value}"
+                f"fNIRS \u2014 {pr_run_select.value} \u2014 {pr_task_select.value} \u2014 {pr_robot_select.value}"
             )
 
             # EMG plots
-            for i, (_col, _label) in enumerate(zip(pr_emg_cols, pr_emg_labels)):
+            for i, (_col, _label) in enumerate(zip(_pr_emg_cols, _pr_emg_labels)):
                 _axes[i + 1].plot(
                     _emg_data[_col]["time"],
                     _emg_data[_col]["data"],
@@ -1620,13 +1685,19 @@ def _(
 
             _axes[-1].set_xlabel("Time (s)")
             for _ax in _axes:
-                _ax.set_xlim(pr_TIME_MIN, pr_TIME_MAX)
+                _ax.set_xlim(_pr_TIME_MIN, _pr_TIME_MAX)
 
             plt.tight_layout()
             plt.show()
 
-    _fig
-    return pr_emg_cols, pr_emg_labels, pr_hbo_cols, pr_hbr_cols
+    pr_fig
+    return
+
+
+@app.cell
+def _(emg_df):
+    emg_df
+    return
 
 
 if __name__ == "__main__":
