@@ -10,12 +10,13 @@ def _():
     from pathlib import Path
     import polars as pl
     import sys
+    import os
     sys.path.insert(0, "/Users/haider/code/Franka-fNIRS-EMG-data_analysis")
     from src.loaders.loader import load_data
     import marimo as mo
     import matplotlib.pyplot as plt
 
-    return Path, csv, load_data, mo, pl
+    return Path, csv, load_data, mo, os, pl
 
 
 @app.cell
@@ -437,6 +438,7 @@ def _(
     handle_dropouts,
     load_data,
     load_trigno_csv,
+    os,
     pl,
     sync_sensor_streams,
 ):
@@ -499,7 +501,6 @@ def _(
     final_df = pl.concat(_all_session_dfs)
     print(f"Total: {final_df.shape[0]:,} rows x {final_df.shape[1]} columns")
 
-    import os
     os.makedirs(PROCESSED_DIR, exist_ok=True)
     export_path = f"{PROCESSED_DIR}/all_emg_epochs.parquet"
     final_df.write_parquet(export_path)
