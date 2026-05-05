@@ -269,7 +269,6 @@ def _(filter_rms, np, pl):
         Line2D,
         apply_baseline,
         build_legend,
-        filter_rms_per_epoch,
         legend_layout,
         prepare_emg_for_analysis,
     )
@@ -1557,7 +1556,6 @@ def _(fnirs_df, mo):
 @app.cell(hide_code=True)
 def _(
     emg_df,
-    filter_rms_per_epoch,
     fnirs_df,
     mo,
     pl,
@@ -1565,6 +1563,7 @@ def _(
     pr_robot_select,
     pr_run_select,
     pr_task_select,
+    prepare_emg_for_analysis,
 ):
     # Per-Run Viewer Summary Stats
     # Reuses: fnirs_df, emg_df, pr_task_select, pr_robot_select, pr_run_select, pr_baseline_switch, pr_filter_switch, filter_rms
@@ -1584,7 +1583,12 @@ def _(
         _r_fnirs = fnirs_df.filter(_cond)
 
         # Apply filter to EMG if toggle is on
-        _emg_for_stats = filter_rms_per_epoch(emg_df) if pr_filter_switch.value else emg_df
+        _emg_for_stats = prepare_emg_for_analysis(
+        emg_df,
+        apply_filter=pr_filter_switch.value,
+        time_min=-5.0,
+        time_max=15.0,
+    )
         _r_emg = _emg_for_stats.filter(_cond)
         _r_emg_post = _emg_for_stats.filter(_cond_post)
 
@@ -1691,7 +1695,6 @@ def _(
 @app.cell(hide_code=True)
 def _(
     emg_df,
-    filter_rms_per_epoch,
     fnirs_df,
     np,
     pl,
@@ -1701,6 +1704,7 @@ def _(
     pr_robot_select,
     pr_run_select,
     pr_task_select,
+    prepare_emg_for_analysis,
 ):
     # Per-Run Viewer Plot
     # Reuses: fnirs_df, emg_df, pl, plt, np, pr_task_select, pr_robot_select, pr_run_select, pr_baseline_switch, pr_filter_switch, filter_rms
@@ -1712,8 +1716,11 @@ def _(
     _pr_hbr_cols = [c for c in fnirs_df.columns if c.endswith("_hbr")]
 
     # Use filtered EMG if toggle is on
-    _pr_emg_for_plot = (
-        filter_rms_per_epoch(emg_df) if pr_filter_switch.value else emg_df
+    _pr_emg_for_plot = prepare_emg_for_analysis(
+        emg_df,
+        apply_filter=pr_filter_switch.value,
+        time_min=-5.0,
+        time_max=15.0,
     )
     _pr_emg_cols = [
         c for c in _pr_emg_for_plot.columns if "EMG" in c and c.endswith("(mV)")
