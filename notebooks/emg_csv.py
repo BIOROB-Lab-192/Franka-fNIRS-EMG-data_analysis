@@ -180,21 +180,26 @@ def _(pl):
         """
         Sync all sensor channels onto a common timebase.
 
-        Each sensor channel has a paired timestamp column (ending in "Time Series (s)")
+        Each sensor channel has a paired timestamp column ending in "Time Series (s)"
         and a value column. This function aligns all value columns onto the timestamps
         of a reference channel using join_asof.
+
+        If ref_col is None, the function auto-selects the slowest EMG signal as the
+        reference timebase, so faster channels are downsampled rather than slower
+        channels being upsampled.
 
         Args:
             df: Polars DataFrame with interleaved multi-sensor data.
             ref_col: Reference timestamp column name. If None, auto-selects the
-                     sensor with the highest sampling rate (most non-null timestamps).
-            strategy: join_asof strategy — "nearest" (default), "forward", or "backward".
+                     slowest EMG timestamp column.
+            strategy: join_asof strategy — "nearest", "forward", or "backward".
 
         Returns:
             Polars DataFrame with shape (n_ref_timestamps, n_value_channels + 1).
-            First column is "time" (the reference timestamps).
-            Value columns are aligned to that timebase via nearest-neighbor matching.
+            First column is "time".
+            Value columns are aligned to that EMG timebase.
         """
+
         # --- Discover channel pairs ---
         ts_cols = [c for c in df.columns if "Time Series" in c]
         val_cols = [c for c in df.columns if "Time Series" not in c]
@@ -203,9 +208,11 @@ def _(pl):
         for vc in val_cols:
             prefix = vc.rsplit(" | ", 1)[0]
             channel_name = vc.split(" | ", 1)[1]
+
             ts_match = (
                 f"{prefix} | {channel_name.rsplit(' (', 1)[0]} Time Series (s)"
             )
+
             if ts_match in ts_cols:
                 pairs.append((ts_match, vc))
             else:
@@ -219,11 +226,21 @@ def _(pl):
 
         # --- Select reference timebase ---
         if ref_col is None:
-            # Pick the timestamp column with the most non-null values (fastest sensor)
-            ref_col = max(
-                ts_cols, key=lambda c: df.select(pl.col(c).drop_nulls()).height
+            emg_ts_cols = [
+                c for c in ts_cols
+                if "emg" in c.lower()
+            ]
+
+            if not emg_ts_cols:
+                raise ValueError("No EMG timestamp columns found.")
+
+            # Pick the EMG timestamp column with the fewest non-null timestamps
+            ref_col = min(
+                emg_ts_cols,
+                key=lambda c: df.select(pl.col(c).drop_nulls()).height
             )
-            print(f"Auto-selected reference: {ref_col}")
+
+            print(f"Auto-selected slowest EMG reference: {ref_col}")
 
         # Build reference timebase: unique, sorted, non-null timestamps
         ref_df = (
@@ -233,6 +250,7 @@ def _(pl):
             .sort("time")
             .unique(subset=["time"])
         )
+
         n_ref = len(ref_df)
         print(f"Reference timebase: {n_ref} timestamps")
 
@@ -240,12 +258,6 @@ def _(pl):
         synced_dfs = [ref_df]
 
         for ch_ts, ch_val in pairs:
-            if ch_ts == ref_col:
-                # Reference channel — just take the values as-is
-                synced_dfs.append(df.select(ch_val))
-                continue
-
-            # Extract non-null (time, value) pairs, sort by time
             ch_data = (
                 df.select(ch_ts, ch_val)
                 .drop_nulls()
@@ -253,7 +265,6 @@ def _(pl):
                 .sort("time")
             )
 
-            # Align to reference timebase
             aligned = (
                 ref_df.join_asof(
                     ch_data,
@@ -308,7 +319,7 @@ def _(pl):
     return (handle_dropouts,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(pl):
 
     def generate_epochs(cleaned, marker_df, epoch_duration=40.0, total_markers=30):
