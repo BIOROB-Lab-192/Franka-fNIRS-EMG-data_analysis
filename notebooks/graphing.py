@@ -39,7 +39,7 @@ def _(mo, pl):
     mo.md(f"""
     **Data loaded:**
     - fNIRS: `{fnirs_df.shape[0]:,}` rows × {fnirs_df.shape[1]} cols (10 Hz)
-    - EMG: `{emg_df.shape[0]:,}` rows × {emg_df.shape[1]} cols (~1926 Hz)
+    - EMG: `{emg_df.shape[0]:,}` rows × {emg_df.shape[1]} cols (~1259 Hz)
     - Robot: `{robot_df.shape[0]:,}` rows × {robot_df.shape[1]} cols
     - Epoch index: {epoch_index.shape[0]} epochs
     """)
@@ -62,7 +62,7 @@ def _(np):
 
 
 @app.cell(hide_code=True)
-def _(filter_rms, pl):
+def _(filter_rms, np, pl):
     # Reusable helpers for all plots
     # Reuses: pl, np from imports cell
     import matplotlib.gridspec as gridspec
@@ -126,12 +126,152 @@ def _(filter_rms, pl):
             ]
         )
 
+    def filter_rms_per_epoch(emg_df):
+        """
+        Apply filter_rms independently to each EMG epoch.
+
+        This prevents sosfiltfilt from filtering across task/run boundaries where
+        time_sec resets or where the signal is discontinuous.
+        """
+        group_cols = ["run_id", "task_instance"]
+
+        filtered_epochs = []
+
+        for _, g in emg_df.group_by(group_cols, maintain_order=True):
+            g = g.sort("time_sec")
+
+            # sosfiltfilt needs enough samples; skip tiny/bad epochs safely
+            if g.height < 20:
+                filtered_epochs.append(g)
+                continue
+
+            filtered_epochs.append(filter_rms(g))
+
+        return (
+            pl.concat(filtered_epochs, how="vertical")
+            .sort(group_cols + ["time_sec"])
+        )
+
+    def align_emg_epochs_to_common_time(
+        emg_df,
+        signal_cols,
+        time_min=-5.0,
+        time_max=15.0,
+        group_cols=("run_id", "task_instance"),
+    ):
+        """
+        Align EMG epochs to a common time grid without downsampling.
+
+        Uses the median native sampling interval from the data, then interpolates
+        each epoch onto the same time_sec vector.
+        """
+        # Estimate native dt across epochs
+        dt_df = (
+            emg_df
+            .sort(list(group_cols) + ["time_sec"])
+            .with_columns(
+                pl.col("time_sec")
+                .diff()
+                .over(list(group_cols))
+                .alias("_dt")
+            )
+        )
+
+        dt = dt_df["_dt"].drop_nulls().median()
+        fs = 1.0 / dt
+
+        # Common native-rate grid
+        t_grid = np.arange(time_min, time_max, dt)
+
+        aligned = []
+
+        meta_cols = [
+            c for c in emg_df.columns
+            if c not in signal_cols and c != "time_sec"
+        ]
+
+        for key, g in emg_df.group_by(list(group_cols), maintain_order=True):
+            g = g.sort("time_sec")
+
+            t = g["time_sec"].to_numpy()
+
+            row_dict = {
+                "time_sec": t_grid,
+            }
+
+            # Preserve grouping columns
+            if len(group_cols) == 1:
+                key = (key,)
+
+            for col_name, value in zip(group_cols, key):
+                row_dict[col_name] = value
+
+            # Preserve useful metadata as first value in epoch
+            for c in meta_cols:
+                if c not in group_cols:
+                    row_dict[c] = g[c][0]
+
+            # Interpolate each EMG channel
+            for c in signal_cols:
+                y = g[c].to_numpy()
+                valid = np.isfinite(t) & np.isfinite(y)
+
+                if valid.sum() < 2:
+                    row_dict[c] = np.full_like(t_grid, np.nan, dtype=float)
+                else:
+                    row_dict[c] = np.interp(
+                        t_grid,
+                        t[valid],
+                        y[valid],
+                        left=np.nan,
+                        right=np.nan,
+                    )
+
+            aligned.append(pl.DataFrame(row_dict))
+
+        return pl.concat(aligned, how="vertical")
+
+    def prepare_emg_for_analysis(
+        emg_df,
+        apply_filter=False,
+        time_min=-5.0,
+        time_max=15.0,
+    ):
+        """
+        Prepare EMG for all plotting/statistics.
+
+        - Optionally applies bandpass + RMS per epoch.
+        - Aligns every epoch to the same native-rate time grid.
+        - Returns a dataframe safe to group/average by exact time_sec.
+        """
+
+        emg_cols = [
+            c for c in emg_df.columns
+            if "EMG" in c and c.endswith("(mV)")
+        ]
+
+        if apply_filter:
+            out = filter_rms_per_epoch(emg_df)
+        else:
+            out = emg_df
+
+        out = align_emg_epochs_to_common_time(
+            out,
+            signal_cols=emg_cols,
+            time_min=time_min,
+            time_max=time_max,
+            group_cols=("run_id", "task_instance"),
+        )
+
+        return out
+
     return (
         Line2D,
         apply_baseline,
         build_legend,
         filter_rms_per_epoch,
         legend_layout,
+        prepare_emg_for_analysis,
     )
 
 
@@ -442,7 +582,7 @@ def _(
             0.5, 0.5, "No channels selected", ha="center", va="center", fontsize=14
         )
         _ax.set_axis_off()
-        plt.show()
+    
 
     else:
         fnirs_ch_time = None
@@ -535,7 +675,7 @@ def _(
         legend_layout(fnirs_ch_fig, len(_legend_handles))
         build_legend(fnirs_ch_fig, _legend_handles)
 
-        plt.show()
+    
 
     fnirs_ch_fig
     return
@@ -655,7 +795,7 @@ def _(
             0.5, 0.5, "No tasks selected", ha="center", va="center", fontsize=14
         )
         _ax.set_axis_off()
-        plt.show()
+    
     else:
         fnirs_task_time = None
         fnirs_task_robot = {}
@@ -778,7 +918,7 @@ def _(
         legend_layout(fnirs_task_fig, len(_legend_handles))
         build_legend(fnirs_task_fig, _legend_handles)
 
-        plt.show()
+    
 
     fnirs_task_fig
     return
@@ -800,15 +940,18 @@ def _(
     emg_baseline_switch,
     emg_df,
     emg_ov_filter_switch,
-    filter_rms_per_epoch,
     pl,
     plt,
+    prepare_emg_for_analysis,
 ):
     # EMG Aggregated: Robot vs No-Robot (Global Sensor Average)
     # Reuses: emg_df, pl, plt, np, filter_rms, emg_ov_filter_switch
 
-    _emg_src = (
-        filter_rms_per_epoch(emg_df) if emg_ov_filter_switch.value else emg_df
+    _emg_src = prepare_emg_for_analysis(
+        emg_df,
+        apply_filter=emg_ov_filter_switch.value,
+        time_min=-5.0,
+        time_max=15.0,
     )
     _ylabel = "EMG RMS (mV)" if emg_ov_filter_switch.value else "EMG (mV)"
 
@@ -879,19 +1022,22 @@ def _(
     _emg_ov_ax2.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
 
     plt.tight_layout()
-    plt.show()
+
 
     _emg_ov_fig
     return
 
 
 @app.cell(hide_code=True)
-def _(emg_df, emg_ov_filter_switch, filter_rms_per_epoch, mo, pl):
+def _(emg_df, emg_ov_filter_switch, mo, pl, prepare_emg_for_analysis):
     # EMG Overall Summary Stats
     # Reuses: emg_df, pl, mo, filter_rms, emg_ov_filter_switch
 
-    _emg_src = (
-        filter_rms_per_epoch(emg_df) if emg_ov_filter_switch.value else emg_df
+    _emg_src = prepare_emg_for_analysis(
+        emg_df,
+        apply_filter=emg_ov_filter_switch.value,
+        time_min=-5.0,
+        time_max=15.0,
     )
 
     _emg_ov_sf = _emg_src.filter(
@@ -969,18 +1115,22 @@ def _(emg_df, mo):
 @app.cell(hide_code=True)
 def _(
     emg_df,
+    emg_ov_filter_switch,
     emg_sens_filter_switch,
     emg_sensor_options,
     emg_sensor_selector,
-    filter_rms_per_epoch,
     mo,
     pl,
+    prepare_emg_for_analysis,
 ):
     # EMG Sensor Plot Summary Stats
     # Reuses: emg_df, pl, mo, emg_sensor_selector, emg_sensor_options, filter_rms, emg_sens_filter_switch
 
-    _emg_src = (
-        filter_rms_per_epoch(emg_df) if emg_sens_filter_switch.value else emg_df
+    _emg_src = prepare_emg_for_analysis(
+        emg_df,
+        apply_filter=emg_ov_filter_switch.value,
+        time_min=-5.0,
+        time_max=15.0,
     )
 
     _emg_ss_sf = _emg_src.filter(
@@ -1038,16 +1188,19 @@ def _(
     emg_sens_filter_switch,
     emg_sensor_options,
     emg_sensor_selector,
-    filter_rms_per_epoch,
     legend_layout,
     pl,
     plt,
+    prepare_emg_for_analysis,
 ):
     # EMG Per-Sensor Interactive Plot
     # Reuses: emg_df, pl, plt, np, Line2D, emg_sensor_selector, emg_sensor_options, filter_rms, emg_sens_filter_switch
 
-    _emg_src = (
-        filter_rms_per_epoch(emg_df) if emg_sens_filter_switch.value else emg_df
+    _emg_src = prepare_emg_for_analysis(
+        emg_df,
+        apply_filter=emg_sens_filter_switch.value,
+        time_min=-5.0,
+        time_max=15.0,
     )
     _ylabel = "EMG RMS (mV)" if emg_sens_filter_switch.value else "EMG (mV)"
 
@@ -1083,7 +1236,7 @@ def _(
             0.5, 0.5, "No sensors selected", ha="center", va="center", fontsize=14
         )
         _ax.set_axis_off()
-        plt.show()
+    
     else:
         _emg_sp_robot = {}
         _emg_sp_no_robot = {}
@@ -1145,7 +1298,7 @@ def _(
         legend_layout(_emg_sp_fig, len(_legend_handles))
         build_legend(_emg_sp_fig, _legend_handles)
 
-        plt.show()
+    
 
     _emg_sp_fig
     return
@@ -1175,15 +1328,18 @@ def _(
     emg_df,
     emg_task_filter_switch,
     emg_task_selector,
-    filter_rms_per_epoch,
     mo,
     pl,
+    prepare_emg_for_analysis,
 ):
     # EMG Task Plot Summary Stats
     # Reuses: emg_df, pl, mo, emg_task_selector, filter_rms, emg_task_filter_switch
 
-    _emg_src = (
-        filter_rms_per_epoch(emg_df) if emg_task_filter_switch.value else emg_df
+    _emg_src = prepare_emg_for_analysis(
+        emg_df,
+        apply_filter=emg_task_filter_switch.value,
+        time_min=-5.0,
+        time_max=15.0,
     )
 
     _emg_ts_sf = _emg_src.filter(
@@ -1241,16 +1397,19 @@ def _(
     emg_df,
     emg_task_filter_switch,
     emg_task_selector,
-    filter_rms_per_epoch,
     legend_layout,
     pl,
     plt,
+    prepare_emg_for_analysis,
 ):
     # EMG Per-Task Interactive Plot
     # Reuses: emg_df, pl, plt, np, Line2D, emg_task_selector, filter_rms, emg_task_filter_switch, apply_baseline
 
-    _emg_src = (
-        filter_rms_per_epoch(emg_df) if emg_task_filter_switch.value else emg_df
+    _emg_src = prepare_emg_for_analysis(
+        emg_df,
+        apply_filter=emg_task_filter_switch.value,
+        time_min=-5.0,
+        time_max=15.0,
     )
     _ylabel = "EMG RMS (mV)" if emg_task_filter_switch.value else "EMG (mV)"
 
@@ -1272,7 +1431,7 @@ def _(
             0.5, 0.5, "No tasks selected", ha="center", va="center", fontsize=14
         )
         _ax.set_axis_off()
-        plt.show()
+    
     else:
         _emg_tp_robot = {}
         _emg_tp_no_robot = {}
@@ -1343,7 +1502,7 @@ def _(
         legend_layout(_emg_tp_fig, len(_legend_handles))
         build_legend(_emg_tp_fig, _legend_handles)
 
-        plt.show()
+    
 
     _emg_tp_fig
     return
@@ -1398,7 +1557,7 @@ def _(fnirs_df, mo):
 @app.cell(hide_code=True)
 def _(
     emg_df,
-    filter_rms,
+    filter_rms_per_epoch,
     fnirs_df,
     mo,
     pl,
@@ -1425,7 +1584,7 @@ def _(
         _r_fnirs = fnirs_df.filter(_cond)
 
         # Apply filter to EMG if toggle is on
-        _emg_for_stats = filter_rms(emg_df) if pr_filter_switch.value else emg_df
+        _emg_for_stats = filter_rms_per_epoch(emg_df) if pr_filter_switch.value else emg_df
         _r_emg = _emg_for_stats.filter(_cond)
         _r_emg_post = _emg_for_stats.filter(_cond_post)
 
@@ -1581,7 +1740,7 @@ def _(
             fontsize=14,
         )
         _ax.set_axis_off()
-        plt.show()
+    
 
     else:
         _cond_filter = (
@@ -1606,7 +1765,7 @@ def _(
                 fontsize=14,
             )
             _ax.set_axis_off()
-            plt.show()
+        
 
         else:
             # ============================================================
@@ -1733,15 +1892,41 @@ def _(
                 _ax.set_xlim(_pr_TIME_MIN, _pr_TIME_MAX)
 
             plt.tight_layout()
-            plt.show()
 
     pr_fig
     return
 
 
 @app.cell
-def _(emg_df):
-    emg_df
+def _(emg_df, pl):
+    emg_sampling_check = (
+        emg_df
+        .sort(["run_id", "task_instance", "time_sec"])
+        .with_columns(
+            pl.col("time_sec")
+            .diff()
+            .over(["run_id", "task_instance"])
+            .alias("dt")
+        )
+        .group_by(["run_id", "task_instance"])
+        .agg(
+            [
+                pl.len().alias("n_samples"),
+                pl.col("time_sec").min().alias("t_min"),
+                pl.col("time_sec").max().alias("t_max"),
+                pl.col("dt").drop_nulls().min().alias("dt_min"),
+                pl.col("dt").drop_nulls().median().alias("dt_median"),
+                pl.col("dt").drop_nulls().max().alias("dt_max"),
+                pl.col("dt").drop_nulls().mean().alias("dt_mean"),
+                pl.col("dt").drop_nulls().std().alias("dt_std"),
+                (1 / pl.col("dt").drop_nulls().median()).alias("fs_median"),
+                (pl.col("dt") <= 0).sum().alias("non_positive_dt_count"),
+            ]
+        )
+        .sort(["run_id", "task_instance"])
+    )
+
+    emg_sampling_check
     return
 
 
