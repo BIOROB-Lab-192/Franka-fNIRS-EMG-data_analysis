@@ -256,6 +256,50 @@ def _(norobot_epochs, plt, robot_epochs):
 
 
 @app.cell
+def _(norobot_epochs, os, plt, robot_epochs):
+    def _():
+        cmp_tasks = [f"task_{i}" for i in range(1, 11)]
+
+        os.makedirs("./figures", exist_ok=True)
+
+        cmp_colors = {"Robot": "#AA3377", "NoRobot": "#4477AA"}
+
+        for cmp_task in cmp_tasks:
+            fig, ax = plt.subplots(figsize=(6, 4), layout="constrained")
+
+            for label, cmp_epochs in [
+                ("Robot", robot_epochs),
+                ("NoRobot", norobot_epochs),
+            ]:
+                for ch, ls in [("hbo", "-"), ("hbr", "--")]:
+                    cmp_ev = cmp_epochs[cmp_task].average(picks=ch)
+
+                    ax.plot(
+                        cmp_ev.times,
+                        cmp_ev.data.mean(axis=0) * 1e6,
+                        label=f"{label} {ch.upper()}",
+                        color=cmp_colors[label],
+                        linestyle=ls,
+                    )
+
+            ax.axvline(0, color="k", linestyle="--", linewidth=0.8)
+            ax.legend(fontsize=8)
+            ax.set_xlabel("Time (s)")
+            ax.set_ylabel("Concentration (μM)")
+            ax.tick_params(labelsize=8)
+
+            # No title
+
+            filename = f"./figures/{cmp_task}_hbo-hbr_robot-vs-norobot.png"
+            fig.savefig(filename, dpi=300, bbox_inches="tight")
+        return plt.close(fig)
+
+
+    _()
+    return
+
+
+@app.cell
 def _(norobot_epochs, np, plt, robot_epochs):
     jnt_tasks = [f"task_{i}" for i in range(1, 11)]
     jnt_times = np.arange(-1.0, 12.0, 2.5)  # key timepoints for topomaps
@@ -275,7 +319,7 @@ def _(norobot_epochs, np, plt, robot_epochs):
     return
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(PROCESSED_DIR, data_files, mne, os, pl, preprocess, task_ids):
     # Export per-session fNIRS epochs to a single long-format CSV.
     # Each row = one time sample within one epoch, with all HbO/HbR channel
