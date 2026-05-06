@@ -1,9 +1,7 @@
 """
-EMG 1D CNN — Final Production Model
-=====================================
-Excludes sam_robot_2 (suspected sensor issue, justified by debug analysis).
-9-fold LOOCV by run_id. 1D CNN with conv dropout.
-Outputs: model weights, aggregate metrics, per-window predictions.
+EMG 1D CNN — Production Model
+==============================
+Winning config: 5036 timesteps, conv_dropout=0.2, classifier_dropout=0.3
 """
 
 import polars as pl
@@ -17,6 +15,7 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import (
     confusion_matrix, accuracy_score, precision_score,
     recall_score, f1_score, roc_curve, auc,
+    classification_report
 )
 import csv
 import json
@@ -36,8 +35,6 @@ EMG_COLUMNS = [
     "Duo Sensor 3 (78042) | EMG 2 (mV)",
 ]
 
-EXCLUDED_RUNS = {"sam_robot_2"}  # Suspected sensor issue — see prod/ run for comparison
-
 N_CHANNELS = len(EMG_COLUMNS)
 N_CLASSES = 2
 BATCH_SIZE = 8
@@ -48,7 +45,7 @@ EARLY_STOP_PATIENCE = 10
 RANDOM_SEED = 42
 DEVICE = "cpu"
 
-# Winning grid search config
+# Winning config from grid search
 CLASSIFIER_DROP = 0.3
 CONV_DROP = 0.2
 
@@ -59,28 +56,24 @@ FIG_DIR.mkdir(parents=True, exist_ok=True)
 EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
 print(f"Device: {DEVICE}")
-print(f"Excluded runs: {EXCLUDED_RUNS}")
 print(f"Config: conv_drop={CONV_DROP}, classifier_drop={CLASSIFIER_DROP}, "
-      f"weight_decay={WEIGHT_DECAY}")
+      f"weight_decay={WEIGHT_DECAY}, lr={LR}")
 
 
 # ──────────────────────────── DATA ────────────────────────────
 
 def load_and_prepare():
     df = pl.read_parquet(DATA_PATH)
+    print(f"Loaded {df.shape[0]} rows, {df.shape[1]} columns")
+    print(f"Runs: {df['run_id'].unique().to_list()}")
+    print(f"Task instances: {df['task_instance'].n_unique()}")
     runs = {}
     for run_id in df["run_id"].unique().sort().to_list():
-        if run_id in EXCLUDED_RUNS:
-            print(f"  EXCLUDED: {run_id}")
-            continue
         run_df = df.filter(pl.col("run_id") == run_id)
         label = run_df["is_robot"][0]
         runs[run_id] = {"df": run_df, "label": int(label),
                          "n_instances": run_df["task_instance"].n_unique()}
         print(f"  {run_id}: label={label}, {runs[run_id]['n_instances']} instances")
-    n_robot = sum(1 for r in runs.values() if r["label"] == 1)
-    n_norobot = sum(1 for r in runs.values() if r["label"] == 0)
-    print(f"\nTotal: {len(runs)} runs ({n_robot} robot, {n_norobot} norobot)")
     return df, runs
 
 
@@ -149,20 +142,21 @@ def build_fold_data(runs, held_out_run, downsample_factor, target_len):
 # ──────────────────────────── MODEL ────────────────────────────
 
 class EMGClassifier1D(nn.Module):
-    def __init__(self, n_channels=N_CHANNELS, seq_len=5036, n_classes=N_CLASSES):
+    def __init__(self, n_channels=N_CHANNELS, seq_len=5036, n_classes=N_CLASSES,
+                 classifier_drop=CLASSIFIER_DROP, conv_drop=CONV_DROP):
         super().__init__()
         self.features = nn.Sequential(
             nn.Conv1d(n_channels, 32, kernel_size=7, stride=2, padding=3),
             nn.BatchNorm1d(32), nn.ReLU(),
-            nn.Dropout1d(CONV_DROP),
+            nn.Dropout1d(conv_drop),
             nn.MaxPool1d(2),
             nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2),
             nn.BatchNorm1d(64), nn.ReLU(),
-            nn.Dropout1d(CONV_DROP),
+            nn.Dropout1d(conv_drop),
             nn.MaxPool1d(2),
             nn.Conv1d(64, 128, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm1d(128), nn.ReLU(),
-            nn.Dropout1d(CONV_DROP),
+            nn.Dropout1d(conv_drop),
             nn.MaxPool1d(2),
             nn.Conv1d(128, 256, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm1d(256), nn.ReLU(),
@@ -171,7 +165,7 @@ class EMGClassifier1D(nn.Module):
         self.classifier = nn.Sequential(
             nn.Flatten(),
             nn.Linear(256, 64), nn.ReLU(),
-            nn.Dropout(CLASSIFIER_DROP),
+            nn.Dropout(classifier_drop),
             nn.Linear(64, n_classes),
         )
 
@@ -181,7 +175,7 @@ class EMGClassifier1D(nn.Module):
 
 # ──────────────────────────── TRAINING ────────────────────────────
 
-def train_fold(model, train_loader, test_loader):
+def train_fold(model, train_loader, test_loader, fold_idx):
     model = model.to(DEVICE)
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
@@ -242,7 +236,7 @@ def train_fold(model, train_loader, test_loader):
         model.load_state_dict(best_model_state)
         model.cpu()
 
-    # Final eval with probabilities
+    # Final eval
     model.eval()
     all_preds, all_labels, all_probs = [], [], []
     with torch.no_grad():
@@ -260,7 +254,7 @@ def train_fold(model, train_loader, test_loader):
     }
 
 
-# ──────────────────────────── PLOTS ────────────────────────────
+# ──────────────────────────── EVALUATION PLOTS ────────────────────────────
 
 def plot_confusion_matrix(all_labels, all_preds, save_path):
     cm = confusion_matrix(all_labels, all_preds, labels=[0, 1])
@@ -269,7 +263,7 @@ def plot_confusion_matrix(all_labels, all_preds, save_path):
     ax.figure.colorbar(im, ax=ax)
     ax.set(xticks=[0, 1], yticks=[0, 1], xticklabels=["No-Robot", "Robot"],
            yticklabels=["No-Robot", "Robot"], ylabel="True Label",
-           xlabel="Predicted Label", title="Confusion Matrix (excl. sam_robot_2)")
+           xlabel="Predicted Label", title="Aggregate Confusion Matrix (All Folds)")
     thresh = cm.max() / 2
     for i in range(2):
         for j in range(2):
@@ -300,16 +294,14 @@ def plot_roc(all_labels, all_probs, save_path):
     return roc_auc
 
 
-def plot_fold_accuracy(fold_accs, fold_names, save_path):
-    fig, ax = plt.subplots(figsize=(10, 4))
+def plot_fold_accuracy(fold_accs, save_path):
+    fig, ax = plt.subplots(figsize=(8, 4))
     colors = ["#2ecc71" if a >= 0.5 else "#e74c3c" for a in fold_accs]
     ax.bar(range(1, len(fold_accs)+1), fold_accs, color=colors, edgecolor="white")
     ax.axhline(y=np.mean(fold_accs), color="gray", linestyle="--",
                label=f"Mean: {np.mean(fold_accs):.3f}")
     ax.set_xlabel("Fold (Held-out Run)"); ax.set_ylabel("Accuracy")
-    ax.set_title("Per-Fold Accuracy")
-    ax.set_xticks(range(1, len(fold_accs)+1))
-    ax.set_xticklabels(fold_names, rotation=45, ha="right", fontsize=9)
+    ax.set_title("Per-Fold Accuracy (ds5036_drop_conv)"); ax.set_xticks(range(1, len(fold_accs)+1))
     ax.set_ylim([0, 1.05]); ax.legend()
     plt.tight_layout()
     fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -345,24 +337,21 @@ def plot_training_curves(all_histories, save_path):
 
 def main():
     print("=" * 70)
-    print("EMG 1D CNN — FINAL PRODUCTION (excl. sam_robot_2)")
+    print("EMG 1D CNN — PRODUCTION MODEL (ds5036_drop_conv)")
     print("=" * 70)
 
     df, runs = load_and_prepare()
     run_ids = sorted(runs.keys())
+
     ds_factor, actual_seq_len = compute_downsample_factor(runs, target_len=4200)
 
     all_fold_metrics = []
     all_labels_agg, all_preds_agg, all_probs_agg = [], [], []
     all_histories = []
     fold_accuracies = []
-    fold_names = []
     best_fold_acc = 0.0
     best_fold_model = None
     best_fold_idx = 0
-
-    # Per-window predictions
-    per_window_rows = []
 
     print(f"\n{'='*70}")
     print(f"Starting LOOCV: {len(run_ids)} folds")
@@ -375,41 +364,28 @@ def main():
         test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False)
 
         model = EMGClassifier1D(n_channels=N_CHANNELS, seq_len=actual_seq_len)
-        result = train_fold(model, train_loader, test_loader)
+        result = train_fold(model, train_loader, test_loader, fold_idx)
 
         acc = accuracy_score(result["labels"], result["preds"])
-        prec_r = precision_score(result["labels"], result["preds"], pos_label=1, zero_division=0)
-        rec_r = recall_score(result["labels"], result["preds"], pos_label=1, zero_division=0)
-        f1_r = f1_score(result["labels"], result["preds"], pos_label=1, zero_division=0)
+        prec = precision_score(result["labels"], result["preds"], pos_label=1, zero_division=0)
+        rec = recall_score(result["labels"], result["preds"], pos_label=1, zero_division=0)
+        f1 = f1_score(result["labels"], result["preds"], pos_label=1, zero_division=0)
 
         metrics = {
-            "accuracy": acc, "precision_robot": prec_r, "recall_robot": rec_r, "f1_robot": f1_r,
+            "accuracy": acc, "precision_robot": prec,
+            "recall_robot": rec, "f1_robot": f1,
             "precision_norobot": precision_score(result["labels"], result["preds"], pos_label=0, zero_division=0),
             "recall_norobot": recall_score(result["labels"], result["preds"], pos_label=0, zero_division=0),
             "f1_norobot": f1_score(result["labels"], result["preds"], pos_label=0, zero_division=0),
         }
         all_fold_metrics.append(metrics)
         fold_accuracies.append(acc)
-        fold_names.append(held_out)
         all_labels_agg.extend(result["labels"])
         all_preds_agg.extend(result["preds"])
         all_probs_agg.extend(result["probs"])
         all_histories.append(result["history"])
 
-        # Collect per-window predictions
-        n_windows = len(result["labels"])
-        for w in range(n_windows):
-            per_window_rows.append({
-                "fold": fold_idx + 1,
-                "held_out_run": held_out,
-                "true_label": int(result["labels"][w]),
-                "pred_label": int(result["preds"][w]),
-                "prob_norobot": float(result["probs"][w][0]),
-                "prob_robot": float(result["probs"][w][1]),
-                "correct": int(result["labels"][w]) == int(result["preds"][w]),
-            })
-
-        print(f"  ✓ Accuracy: {acc:.3f} | F1_robot: {f1_r:.3f} | Recall_robot: {rec_r:.3f}")
+        print(f"  ✓ Accuracy: {acc:.3f} | F1_robot: {f1:.3f} | Recall_robot: {rec:.3f}")
 
         if acc > best_fold_acc:
             best_fold_acc = acc
@@ -424,9 +400,9 @@ def main():
     robot_probs = all_probs_agg[:, 1]
     valid = ~np.isnan(robot_probs)
     try:
-        roc_auc_val = auc(*roc_curve(all_labels_agg[valid], robot_probs[valid])[:2])
+        roc_auc = auc(*roc_curve(all_labels_agg[valid], robot_probs[valid])[:2])
     except Exception:
-        roc_auc_val = 0.5
+        roc_auc = 0.5
 
     aggregate = {
         "mean_accuracy": np.mean(fold_accuracies),
@@ -437,7 +413,7 @@ def main():
         "precision_norobot": precision_score(all_labels_agg, all_preds_agg, pos_label=0, zero_division=0),
         "recall_norobot": recall_score(all_labels_agg, all_preds_agg, pos_label=0, zero_division=0),
         "f1_norobot": f1_score(all_labels_agg, all_preds_agg, pos_label=0, zero_division=0),
-        "roc_auc": roc_auc_val,
+        "roc_auc": roc_auc,
     }
 
     print(f"\n{'='*70}")
@@ -446,41 +422,30 @@ def main():
     for k, v in aggregate.items():
         print(f"  {k}: {v:.4f}")
     print(f"\nPer-fold accuracies: {[f'{a:.3f}' for a in fold_accuracies]}")
-    print(f"Best fold: #{best_fold_idx} ({fold_names[best_fold_idx-1]}, acc={best_fold_acc:.3f})")
+    print(f"Best fold: #{best_fold_idx} (acc={best_fold_acc:.3f})")
 
     # ── Save plots ──
     print(f"\n{'='*70}")
     print("SAVING OUTPUTS")
     print(f"{'='*70}")
-    plot_fold_accuracy(fold_accuracies, fold_names, FIG_DIR / "fold_accuracy.png")
-    plot_confusion_matrix(all_labels_agg, all_preds_agg, FIG_DIR / "confusion_matrix.png")
-    plot_roc(all_labels_agg, all_probs_agg, FIG_DIR / "roc_curve.png")
-    plot_training_curves(all_histories, FIG_DIR / "training_curves.png")
+    plot_fold_accuracy(fold_accuracies, FIG_DIR / "prod_fold_accuracy.png")
+    plot_confusion_matrix(all_labels_agg, all_preds_agg, FIG_DIR / "prod_confusion_matrix.png")
+    plot_roc(all_labels_agg, all_probs_agg, FIG_DIR / "prod_roc_curve.png")
+    plot_training_curves(all_histories, FIG_DIR / "prod_training_curves.png")
     print(f"  Saved 4 figures to {FIG_DIR}")
 
-    # ── Save per-window predictions CSV ──
-    pw_path = EXPORT_DIR / "predictions.csv"
-    pw_fields = ["fold", "held_out_run", "true_label", "pred_label",
-                 "prob_norobot", "prob_robot", "correct"]
-    with open(pw_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=pw_fields)
-        writer.writeheader()
-        writer.writerows(per_window_rows)
-    print(f"  Saved: {pw_path} ({len(per_window_rows)} windows)")
-
-    # ── Save aggregate metrics CSV ──
-    csv_path = EXPORT_DIR / "metrics.csv"
+    # ── Save metrics CSV ──
+    csv_path = EXPORT_DIR / "prod_metrics.csv"
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["metric", "value"])
         writer.writerow(["date", datetime.now().isoformat()])
         writer.writerow(["model", "EMGClassifier1D (1D CNN) — ds5036_drop_conv"])
-        writer.writerow(["excluded_runs", str(EXCLUDED_RUNS)])
-        writer.writerow(["config", f"conv_drop={CONV_DROP}, classifier_drop={CLASSIFIER_DROP}, weight_decay={WEIGHT_DECAY}"])
+        writer.writerow(["config", "conv_drop=0.2, classifier_drop=0.3, weight_decay=1e-4"])
         writer.writerow(["downsample_factor", ds_factor])
         writer.writerow(["seq_len", actual_seq_len])
         writer.writerow(["n_folds", len(run_ids)])
-        writer.writerow(["best_fold_idx", best_fold_idx])
+        writer.writerow(["best_fold", best_fold_idx])
         writer.writerow([])
         writer.writerow(["--- Per-Fold ---", ""])
         for i, (m, rid) in enumerate(zip(all_fold_metrics, run_ids)):
@@ -494,7 +459,7 @@ def main():
     print(f"  Saved: {csv_path}")
 
     # ── Save best model ──
-    model_path = EXPORT_DIR / "model.pt"
+    model_path = EXPORT_DIR / "prod_model.pt"
     torch.save(best_fold_model.state_dict(), model_path)
     print(f"  Saved: {model_path}")
 
@@ -502,7 +467,6 @@ def main():
     config = {
         "model": "EMGClassifier1D",
         "variant": "ds5036_drop_conv",
-        "excluded_runs": list(EXCLUDED_RUNS),
         "data_path": str(DATA_PATH),
         "emg_columns": EMG_COLUMNS,
         "downsample_factor": ds_factor,
@@ -520,12 +484,12 @@ def main():
         "best_fold_held_out": run_ids[best_fold_idx - 1],
         "aggregate_metrics": {k: round(v, 4) for k, v in aggregate.items()},
     }
-    with open(EXPORT_DIR / "config.json", "w") as f:
+    with open(EXPORT_DIR / "prod_config.json", "w") as f:
         json.dump(config, f, indent=2)
-    print(f"  Saved: {EXPORT_DIR / 'config.json'}")
+    print(f"  Saved: {EXPORT_DIR / 'prod_config.json'}")
 
     print(f"\n{'='*70}")
-    print("DONE ✓ — Final production model trained and exported")
+    print("DONE ✓ — Production model trained and exported")
     print(f"{'='*70}")
 
 
