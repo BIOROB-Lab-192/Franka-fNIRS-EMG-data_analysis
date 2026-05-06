@@ -395,56 +395,106 @@ def _(fnirs_baseline_switch, fnirs_df, pl, plt):
 @app.cell(hide_code=True)
 def _(fnirs_df, mo, pl):
     # fNIRS Overall Summary Stats
+    # True condition-level result:
+    # collect all epochs for each condition and average them together
     # Reuses: fnirs_df, pl, mo from existing cells
 
+    _fnirs_ov_TIME_MIN = -5.0
+    _fnirs_ov_TIME_MAX = 15.0
+
     _fnirs_ov_filtered = fnirs_df.filter(
-        (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") <= 15.0)
+        (pl.col("time_sec") >= _fnirs_ov_TIME_MIN)
+        & (pl.col("time_sec") <= _fnirs_ov_TIME_MAX)
     )
+
     _fnirs_ov_hbo = [c for c in fnirs_df.columns if c.endswith("_hbo")]
     _fnirs_ov_hbr = [c for c in fnirs_df.columns if c.endswith("_hbr")]
 
-    # Baseline data (time_sec < 0)
-    _fnirs_ov_bl = _fnirs_ov_filtered.filter(pl.col("time_sec") < 0)
+    # Average HbO and HbR channels within each epoch sample
+    _fnirs_ov_epoch = _fnirs_ov_filtered.with_columns(
+        [
+            pl.mean_horizontal(_fnirs_ov_hbo).alias("hbo_mean"),
+            pl.mean_horizontal(_fnirs_ov_hbr).alias("hbr_mean"),
+        ]
+    )
+
+    # Condition-level average curves:
+    # all epochs in each condition averaged together at each time_sec
+    _fnirs_ov_condition_curve = (
+        _fnirs_ov_epoch
+        .group_by(["is_robot", "time_sec"])
+        .agg(
+            [
+                pl.col("hbo_mean").mean().alias("hbo"),
+                pl.col("hbr_mean").mean().alias("hbr"),
+            ]
+        )
+        .sort(["is_robot", "time_sec"])
+    )
 
     _fnirs_ov_lines = []
+
     for _rob, _cond in [(True, "Robot"), (False, "No-Robot")]:
-        _cdf = _fnirs_ov_filtered.filter(pl.col("is_robot") == _rob)
-        _runs = _cdf["run_id"].n_unique()
-        _parts = _cdf["participant"].n_unique()
-        _tasks = _cdf["task"].n_unique()
-        _cdf_post = _cdf.filter(pl.col("time_sec") >= 0)
-        _ra = _cdf_post.with_columns(
-            [
-                pl.mean_horizontal(_fnirs_ov_hbo).alias("_hbo"),
-                pl.mean_horizontal(_fnirs_ov_hbr).alias("_hbr"),
-            ]
-        )
-        _hbo_m = _ra["_hbo"].mean() * 1e6
-        _hbo_x = _ra["_hbo"].max() * 1e6
-        _hbr_m = _ra["_hbr"].mean() * 1e6
-        _hbr_x = _ra["_hbr"].max() * 1e6
-        # Baseline: mean during time_sec < 0
-        _bl_cdf = _fnirs_ov_bl.filter(pl.col("is_robot") == _rob)
-        _bl_ra = _bl_cdf.with_columns(
-            [
-                pl.mean_horizontal(_fnirs_ov_hbo).alias("_hbo"),
-                pl.mean_horizontal(_fnirs_ov_hbr).alias("_hbr"),
-            ]
-        )
-        _hbo_bl = _bl_ra["_hbo"].mean() * 1e6 if _bl_ra.height > 0 else 0.0
-        _hbr_bl = _bl_ra["_hbr"].mean() * 1e6 if _bl_ra.height > 0 else 0.0
-        _fnirs_ov_lines.append(
-            f"| {_cond} | {_runs} | {_parts} | {_tasks} | {_hbo_m:.3f} | {_hbo_x:.3f} | {_hbo_bl:.3f} | {_hbr_m:.3f} | {_hbr_x:.3f} | {_hbr_bl:.3f} |"
+        _epoch_df = _fnirs_ov_epoch.filter(pl.col("is_robot") == _rob)
+
+        # If run_id + task_instance defines an epoch, use this.
+        # If fNIRS only has one row per run_id/task, this is still safer than run_id alone.
+        _epochs = _epoch_df.select(["run_id", "task_instance"]).unique().height \
+            if "task_instance" in _epoch_df.columns \
+            else _epoch_df["run_id"].n_unique()
+
+        _participants = _epoch_df["participant"].n_unique()
+        _tasks = _epoch_df["task"].n_unique()
+
+        _curve = _fnirs_ov_condition_curve.filter(pl.col("is_robot") == _rob)
+
+        # Post-stimulus condition-level curve: 0–15s
+        _post = _curve.filter(
+            (pl.col("time_sec") >= 0)
+            & (pl.col("time_sec") <= 15.0)
         )
 
-    _fnirs_ov_tbl = "| Condition | Runs | Participants | Tasks | HbO Mean (μM) | HbO Max (μM) | HbO Baseline (μM) | HbR Mean (μM) | HbR Max (μM) | HbR Baseline (μM) |\n"
-    _fnirs_ov_tbl += "|-----------|------|--------------|-------|---------------|--------------|-------------------|---------------|--------------|-------------------|\n"
+        # Baseline condition-level curve: -5–0s
+        _baseline = _curve.filter(
+            (pl.col("time_sec") >= -5.0)
+            & (pl.col("time_sec") < 0)
+        )
+
+        # Convert to μM after computing values
+        _hbo_m = _post["hbo"].mean() * 1e6
+        _hbo_x = _post["hbo"].max() * 1e6
+        _hbo_bl = _baseline["hbo"].mean() * 1e6 if _baseline.height > 0 else 0.0
+
+        _hbr_m = _post["hbr"].mean() * 1e6
+        _hbr_x = _post["hbr"].max() * 1e6
+        _hbr_bl = _baseline["hbr"].mean() * 1e6 if _baseline.height > 0 else 0.0
+
+        _fnirs_ov_lines.append(
+            f"| {_cond} | {_epochs} | {_participants} | {_tasks} | "
+            f"{_hbo_m:.3f} | {_hbo_x:.3f} | {_hbo_bl:.3f} | "
+            f"{_hbr_m:.3f} | {_hbr_x:.3f} | {_hbr_bl:.3f} |"
+        )
+
+    _fnirs_ov_tbl = (
+        "| Condition | Epochs | Participants | Tasks | "
+        "HbO Mean Curve 0–15s (μM) | HbO Max Curve 0–15s (μM) | HbO Baseline −5–0s (μM) | "
+        "HbR Mean Curve 0–15s (μM) | HbR Max Curve 0–15s (μM) | HbR Baseline −5–0s (μM) |\n"
+    )
+    _fnirs_ov_tbl += (
+        "|-----------|--------|--------------|-------|"
+        "----------------------------|---------------------------|--------------------------|"
+        "----------------------------|---------------------------|--------------------------|\n"
+    )
     _fnirs_ov_tbl += "\n".join(_fnirs_ov_lines)
 
     mo.md(f"""
     ### fNIRS Overall Summary
 
-    Global channel average across all tasks, participants. Mean and max over 0\u201315s post-stimulus; baseline from \u22125 to 0s.
+    This summary matches a condition-level averaged fNIRS graph.
+
+    For each condition, all epochs are pooled and averaged together at each `time_sec`. HbO and HbR channels are averaged within each epoch sample first, then all epochs in the condition are averaged at each time point.
+
+    Mean and max are computed from the condition-level averaged curve over 0–15s post-stimulus. Baseline is computed from the same condition-level averaged curve over −5 to 0s.
 
     {_fnirs_ov_tbl}
     """)
@@ -591,7 +641,7 @@ def _(
             0.5, 0.5, "No channels selected", ha="center", va="center", fontsize=14
         )
         _ax.set_axis_off()
-    
+
 
     else:
         fnirs_ch_time = None
@@ -684,7 +734,7 @@ def _(
         legend_layout(fnirs_ch_fig, len(_legend_handles))
         build_legend(fnirs_ch_fig, _legend_handles)
 
-    
+
 
     fnirs_ch_fig
     return
@@ -804,7 +854,7 @@ def _(
             0.5, 0.5, "No tasks selected", ha="center", va="center", fontsize=14
         )
         _ax.set_axis_off()
-    
+
     else:
         fnirs_task_time = None
         fnirs_task_robot = {}
@@ -927,7 +977,7 @@ def _(
         legend_layout(fnirs_task_fig, len(_legend_handles))
         build_legend(fnirs_task_fig, _legend_handles)
 
-    
+
 
     fnirs_task_fig
     return
@@ -1038,9 +1088,17 @@ def _(
 
 
 @app.cell(hide_code=True)
-def _(emg_df, emg_ov_filter_switch, mo, pl, prepare_emg_for_analysis):
+def _(
+    emg_baseline_switch,
+    emg_df,
+    emg_ov_filter_switch,
+    mo,
+    pl,
+    prepare_emg_for_analysis,
+):
     # EMG Overall Summary Stats
-    # Reuses: emg_df, pl, mo, filter_rms, emg_ov_filter_switch
+    # Matches: EMG Aggregated Robot vs No-Robot graph logic
+    # Reuses: emg_df, pl, mo, filter_rms, emg_ov_filter_switch, emg_baseline_switch
 
     _emg_src = prepare_emg_for_analysis(
         emg_df,
@@ -1049,39 +1107,108 @@ def _(emg_df, emg_ov_filter_switch, mo, pl, prepare_emg_for_analysis):
         time_max=15.0,
     )
 
-    _emg_ov_sf = _emg_src.filter(
-        (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") <= 15.0)
+    _emg_ov_TIME_MIN = -5.0
+    _emg_ov_TIME_MAX = 15.0
+
+    _emg_ov_cols = [
+        c for c in _emg_src.columns
+        if "EMG" in c and c.endswith("(mV)")
+    ]
+
+    _emg_ov_filtered = _emg_src.filter(
+        (pl.col("time_sec") >= _emg_ov_TIME_MIN)
+        & (pl.col("time_sec") <= _emg_ov_TIME_MAX)
     )
-    _emg_ov_ec = [c for c in _emg_src.columns if "EMG" in c and c.endswith("(mV)")]
-    _emg_ov_bl = _emg_ov_sf.filter(pl.col("time_sec") < 0)
+
+    # Per-row/global sensor average
+    _emg_ov_run_avg = _emg_ov_filtered.with_columns(
+        pl.mean_horizontal(_emg_ov_cols).alias("emg_mean")
+    )
+
+    # Match graph baseline correction exactly
+    if emg_baseline_switch.value:
+        for _col in _emg_ov_cols:
+            _bl = (
+                _emg_ov_run_avg
+                .filter(pl.col("time_sec") < 0)
+                .group_by(["run_id", "task_instance"])
+                .agg(pl.col(_col).mean().alias("_base"))
+            )
+
+            _emg_ov_run_avg = (
+                _emg_ov_run_avg
+                .join(_bl, on=["run_id", "task_instance"], how="left")
+                .with_columns(
+                    (pl.col(_col) - pl.col("_base")).alias(_col)
+                )
+                .drop("_base")
+            )
+
+        _emg_ov_run_avg = _emg_ov_run_avg.with_columns(
+            pl.mean_horizontal(_emg_ov_cols).alias("emg_mean")
+        )
+
+    # This is the exact condition-level curve used in the graph
+    _emg_ov_avg = (
+        _emg_ov_run_avg
+        .group_by("time_sec", "is_robot")
+        .agg(pl.col("emg_mean").mean().alias("emg"))
+        .sort("time_sec")
+    )
 
     _emg_ov_lines = []
+
     for _rob, _cond in [(True, "Robot"), (False, "No-Robot")]:
-        _cdf = _emg_ov_sf.filter(pl.col("is_robot") == _rob)
+        _cdf = _emg_ov_run_avg.filter(pl.col("is_robot") == _rob)
+
         _runs = _cdf.select("run_id", "task_instance").unique().height
         _parts = _cdf["participant"].n_unique()
         _tasks = _cdf["task"].n_unique()
-        _cdf_post = _cdf.filter(pl.col("time_sec") >= 0)
-        _ra = _cdf_post.with_columns(pl.mean_horizontal(_emg_ov_ec).alias("_emg"))
-        _emg_m = _ra["_emg"].mean()
-        _emg_x = _ra["_emg"].max()
-        _bl_cdf = _emg_ov_bl.filter(pl.col("is_robot") == _rob)
-        _bl_ra = _bl_cdf.with_columns(pl.mean_horizontal(_emg_ov_ec).alias("_emg"))
-        _emg_bl = _bl_ra["_emg"].mean() if _bl_ra.height > 0 else 0.0
-        _emg_ov_lines.append(
-            f"| {_cond} | {_runs} | {_parts} | {_tasks} | {_emg_m:.4f} | {_emg_x:.4f} | {_emg_bl:.4f} |"
+
+        # Same plotted curve for this condition
+        _curve = _emg_ov_avg.filter(pl.col("is_robot") == _rob)
+
+        # Post-stimulus graph values: 0–15s
+        _curve_post = _curve.filter(
+            (pl.col("time_sec") >= 0)
+            & (pl.col("time_sec") <= 15.0)
         )
 
-    _emg_ov_tbl = "| Condition | Epochs | Participants | Tasks | EMG Mean (mV) | EMG Max (mV) | EMG Baseline (mV) |\n"
-    _emg_ov_tbl += "|-----------|--------|--------------|-------|---------------|--------------|-------------------|\n"
+        # Baseline graph values: -5–0s
+        _curve_bl = _curve.filter(
+            (pl.col("time_sec") >= -5.0)
+            & (pl.col("time_sec") < 0)
+        )
+
+        # These now match what the graph visually shows
+        _emg_m = _curve_post["emg"].mean()
+        _emg_x = _curve_post["emg"].max()
+        _emg_bl = _curve_bl["emg"].mean() if _curve_bl.height > 0 else 0.0
+
+        _emg_ov_lines.append(
+            f"| {_cond} | {_runs} | {_parts} | {_tasks} | "
+            f"{_emg_m:.6f} | {_emg_x:.6f} | {_emg_bl:.6f} |"
+        )
+
+    _emg_ov_tbl = (
+        "| Condition | Epochs | Participants | Tasks | "
+        "Mean of Epoch-Averaged Curve (mV) | Max of Epoch-Averaged Curve (mV) | Baseline of Epoch-Averaged Curve (mV) |\n"
+    )
+    _emg_ov_tbl += (
+        "|-----------|--------|--------------|-------|"
+        "-----------------------------------|----------------------------------|--------------------------------------|\n"
+    )
     _emg_ov_tbl += "\n".join(_emg_ov_lines)
 
     _fn = " (bandpass + RMS)" if emg_ov_filter_switch.value else ""
+    _bl_note = " with per-epoch baseline correction" if emg_baseline_switch.value else ""
 
     mo.md(f"""
     ### EMG Overall Summary{_fn}
 
-    Global sensor average across all tasks, participants. Mean and max over 0\u201315s post-stimulus; baseline from \u22125 to 0s.
+    Values match the aggregated Robot vs No-Robot graph{_bl_note}. Each curve is computed by first averaging EMG sensors within each epoch sample, then averaging those epoch values at each time point by condition.
+
+    Mean and max are computed from the plotted condition-level curve over 0–15s post-stimulus. Baseline is computed from the plotted condition-level curve over −5 to 0s.
 
     {_emg_ov_tbl}
     """)
@@ -1245,7 +1372,7 @@ def _(
             0.5, 0.5, "No sensors selected", ha="center", va="center", fontsize=14
         )
         _ax.set_axis_off()
-    
+
     else:
         _emg_sp_robot = {}
         _emg_sp_no_robot = {}
@@ -1307,7 +1434,7 @@ def _(
         legend_layout(_emg_sp_fig, len(_legend_handles))
         build_legend(_emg_sp_fig, _legend_handles)
 
-    
+
 
     _emg_sp_fig
     return
@@ -1440,7 +1567,7 @@ def _(
             0.5, 0.5, "No tasks selected", ha="center", va="center", fontsize=14
         )
         _ax.set_axis_off()
-    
+
     else:
         _emg_tp_robot = {}
         _emg_tp_no_robot = {}
@@ -1511,7 +1638,7 @@ def _(
         legend_layout(_emg_tp_fig, len(_legend_handles))
         build_legend(_emg_tp_fig, _legend_handles)
 
-    
+
 
     _emg_tp_fig
     return
@@ -1741,7 +1868,7 @@ def _(
             fontsize=14,
         )
         _ax.set_axis_off()
-    
+
 
     else:
         _cond_filter = (
@@ -1765,7 +1892,7 @@ def _(
                 fontsize=14,
             )
             _ax.set_axis_off()
-        
+
 
         else:
             # ============================================================

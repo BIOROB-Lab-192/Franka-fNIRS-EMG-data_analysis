@@ -15,7 +15,6 @@ def _():
     from itertools import compress
     import re
     from collections import defaultdict
-    import pandas as pd
 
     DATA_DIR = "data"
     RAW_DIR = f"{DATA_DIR}/raw"
@@ -45,7 +44,7 @@ def _(RAW_DIR, mo):
 
 
 @app.cell
-def _(data_files, mne):
+def _(data_files, mne, task_ids):
     def _():
         """Print per-session epoch statistics: total, kept, and dropped counts."""
         session_stats = {}
@@ -56,11 +55,7 @@ def _(data_files, mne):
             raw_od = mne.preprocessing.nirs.optical_density(raw_fnirs)
             raw_hb = mne.preprocessing.nirs.beer_lambert_law(raw_od, ppf=6.0)
             events, _ = mne.events_from_annotations(raw_hb, verbose=False)
-            _task_ids = {
-                'task_1': 1, 'task_2': 2, 'task_3': 3, 'task_4': 4, 'task_5': 5,
-                'task_6': 6, 'task_7': 7, 'task_8': 8, 'task_9': 9, 'task_10': 10,
-            }
-            epochs = mne.Epochs(raw_hb, events, _task_ids, tmin=-5, tmax=15,
+            epochs = mne.Epochs(raw_hb, events, task_ids, tmin=-5, tmax=15,
                                  baseline=(None, 0), preload=True)
             epochs.drop_bad()
             n_total = len(events)
@@ -110,7 +105,8 @@ def _(data_files, mne):
         'task_1': 1, 'task_2': 2, 'task_3': 3, 'task_4': 4, 'task_5': 5,
         'task_6': 6, 'task_7': 7, 'task_8': 8, 'task_9': 9, 'task_10': 10,
     }
-    return norobot_raw, robot_raw, task_ids
+    task_names = list(task_ids.keys())
+    return norobot_raw, robot_raw, task_ids, task_names
 
 
 @app.cell
@@ -222,8 +218,8 @@ def _(norobot_epochs, plt, robot_epochs):
 
 
 @app.cell
-def _(norobot_epochs, plt, robot_epochs):
-    cmp_tasks = [f"task_{i}" for i in range(1, 11)]
+def _(norobot_epochs, plt, robot_epochs, task_names):
+    cmp_tasks = task_names
     cmpfig, cmpaxes = plt.subplots(
         nrows=2, ncols=5, figsize=(20, 8), layout="constrained"
     )
@@ -256,9 +252,9 @@ def _(norobot_epochs, plt, robot_epochs):
 
 
 @app.cell
-def _(norobot_epochs, os, plt, robot_epochs):
+def _(norobot_epochs, os, plt, robot_epochs, task_names):
     def _():
-        cmp_tasks = [f"task_{i}" for i in range(1, 11)]
+        cmp_tasks = task_names
 
         os.makedirs("./figures", exist_ok=True)
 
@@ -300,8 +296,8 @@ def _(norobot_epochs, os, plt, robot_epochs):
 
 
 @app.cell
-def _(norobot_epochs, np, plt, robot_epochs):
-    jnt_tasks = [f"task_{i}" for i in range(1, 11)]
+def _(norobot_epochs, np, plt, robot_epochs, task_names):
+    jnt_tasks = task_names
     jnt_times = np.arange(-1.0, 12.0, 2.5)  # key timepoints for topomaps
 
     for jnt_task in jnt_tasks:
