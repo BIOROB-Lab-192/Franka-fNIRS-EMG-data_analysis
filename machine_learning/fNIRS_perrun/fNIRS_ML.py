@@ -1,9 +1,13 @@
 """
 fNIRS 1D CNN — Production Model
 ================================
-10-fold LOOCV by run_id. 1D CNN on 56 fNIRS channels (28 hbo + 28 hbr).
+10-fold LOOCV by run_id. 1D CNN on 52 fNIRS channels (26 hbo + 26 hbr).
 No downsampling — data already at 10 Hz, 201 timesteps per window.
 Outputs: model weights, aggregate metrics, per-window predictions.
+
+Optimal config from grid search (all_wd_1e3):
+  classifier_drop=0.3, conv_drop=0.0, weight_decay=1e-3
+  acc=0.753 ± 0.294, F1_robot=0.736, AUC=0.830
 """
 
 import polars as pl
@@ -29,7 +33,7 @@ DATA_PATH = Path("./data/processed/combined/data_packet/fnirs_full.parquet")
 FIG_DIR = Path("./machine_learning/fNIRS_perrun/figures")
 EXPORT_DIR = Path("./machine_learning/fNIRS_perrun/export")
 
-# All fNIRS channels: 28 hbo (oxygenated) + 28 hbr (deoxygenated)
+# All fNIRS channels: 26 hbo (oxygenated) + 26 hbr (deoxygenated) = 52 total
 FNIRS_COLUMNS = [
     "S1_D1_hbo", "S1_D2_hbo", "S1_D3_hbo", "S1_D8_hbo",
     "S2_D1_hbo", "S2_D3_hbo", "S2_D4_hbo", "S2_D9_hbo",
@@ -49,17 +53,17 @@ FNIRS_COLUMNS = [
     "S8_D7_hbr", "S8_D15_hbr",
 ]
 
-N_CHANNELS = len(FNIRS_COLUMNS)  # 56
+N_CHANNELS = len(FNIRS_COLUMNS)  # 52
 N_CLASSES = 2
 BATCH_SIZE = 8
 LR = 1e-3
-WEIGHT_DECAY = 1e-4
+WEIGHT_DECAY = 1e-3
 NUM_EPOCHS = 100
 EARLY_STOP_PATIENCE = 20
 RANDOM_SEED = 42
 DEVICE = "cpu"
 
-# Regularization (starting baseline — same as EMG starting point)
+# Regularization — optimal from grid search (all_wd_1e3)
 CLASSIFIER_DROP = 0.3
 CONV_DROP = 0.0
 
@@ -150,13 +154,13 @@ def build_fold_data(runs, held_out_run):
 # ──────────────────────────── MODEL ────────────────────────────
 
 class FNIRSClassifier1D(nn.Module):
-    """1D CNN for fNIRS data: input shape (batch, 56, 201).
+    """1D CNN for fNIRS data: input shape (batch, 52, 201).
     Smaller kernels than EMG model since sequence is shorter (201 vs 5036).
     """
     def __init__(self, n_channels=N_CHANNELS, n_classes=N_CLASSES):
         super().__init__()
         self.features = nn.Sequential(
-            # Block 1: (56, 201) → (32, 100)
+            # Block 1: (52, 201) → (32, 100)
             nn.Conv1d(n_channels, 32, kernel_size=5, stride=1, padding=2),
             nn.BatchNorm1d(32), nn.ReLU(),
             nn.Dropout1d(CONV_DROP),
@@ -490,9 +494,9 @@ def main():
         writer = csv.writer(f)
         writer.writerow(["metric", "value"])
         writer.writerow(["date", datetime.now().isoformat()])
-        writer.writerow(["model", "FNIRSClassifier1D (1D CNN) — baseline"])
+        writer.writerow(["model", "FNIRSClassifier1D (1D CNN) — grid_search_optimized"])
         writer.writerow(["n_channels", N_CHANNELS])
-        writer.writerow(["channel_types", "28 hbo + 28 hbr"])
+        writer.writerow(["channel_types", "26 hbo + 26 hbr"])
         writer.writerow(["seq_len", seq_len])
         writer.writerow(["sampling_rate_hz", 10])
         writer.writerow(["config", f"conv_drop={CONV_DROP}, classifier_drop={CLASSIFIER_DROP}, weight_decay={WEIGHT_DECAY}"])
@@ -521,7 +525,7 @@ def main():
         "data_path": str(DATA_PATH),
         "fnirs_columns": FNIRS_COLUMNS,
         "n_channels": N_CHANNELS,
-        "channel_types": "28 hbo + 28 hbr",
+        "channel_types": "26 hbo + 26 hbr",
         "seq_len": seq_len,
         "sampling_rate_hz": 10,
         "classifier_drop": CLASSIFIER_DROP,
