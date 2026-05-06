@@ -393,7 +393,7 @@ def _(fnirs_baseline_switch, fnirs_df, pl, plt):
 
 
 @app.cell(hide_code=True)
-def _(fnirs_df, mo, pl):
+def _(fnirs_baseline_switch, fnirs_df, mo, pl):
     # fNIRS Overall Summary Stats
     # True condition-level result:
     # collect all epochs for each condition and average them together
@@ -417,6 +417,19 @@ def _(fnirs_df, mo, pl):
             pl.mean_horizontal(_fnirs_ov_hbr).alias("hbr_mean"),
         ]
     )
+
+    if fnirs_baseline_switch.value:
+        for _col in ["hbo_mean", "hbr_mean"]:
+            _bl = (
+                _fnirs_ov_epoch.filter(pl.col("time_sec") < 0)
+                .group_by(["run_id", "task_instance"])
+                .agg(pl.col(_col).mean().alias("_base"))
+            )
+            _fnirs_ov_epoch = (
+                _fnirs_ov_epoch.join(_bl, on=["run_id", "task_instance"], how="left")
+                .with_columns((pl.col(_col) - pl.col("_base")).alias(_col))
+                .drop("_base")
+            )
 
     # Condition-level average curves:
     # all epochs in each condition averaged together at each time_sec
@@ -533,14 +546,31 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(fnirs_channel_options, fnirs_channel_selector, fnirs_df, mo, pl):
+def _(fnirs_baseline_switch, fnirs_channel_options, fnirs_channel_selector, fnirs_df, mo, pl):
     # fNIRS Channel Plot Summary Stats
-    # Reuses: fnirs_df, pl, mo, fnirs_channel_selector, fnirs_channel_options from existing cells
+    # Matches: fNIRS Per-Channel Interactive Plot logic
 
     _fnirs_ch_statsFiltered = fnirs_df.filter(
         (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") <= 15.0)
     )
-    _fnirs_ch_bl = _fnirs_ch_statsFiltered.filter(pl.col("time_sec") < 0)
+
+    _fnirs_ch_selected = [
+        fnirs_channel_options[_ch] for _ch in fnirs_channel_selector.value
+    ]
+
+    # Baseline correction (matching graph logic)
+    if fnirs_baseline_switch.value and _fnirs_ch_selected:
+        for _col in _fnirs_ch_selected:
+            _bl = (
+                _fnirs_ch_statsFiltered.filter(pl.col("time_sec") < 0)
+                .group_by(["run_id", "task_instance"])
+                .agg(pl.col(_col).mean().alias("_base"))
+            )
+            _fnirs_ch_statsFiltered = (
+                _fnirs_ch_statsFiltered.join(_bl, on=["run_id", "task_instance"], how="left")
+                .with_columns((pl.col(_col) - pl.col("_base")).alias(_col))
+                .drop("_base")
+            )
 
     _fnirs_ch_lines = []
     for _lbl in fnirs_channel_selector.value:
@@ -548,21 +578,25 @@ def _(fnirs_channel_options, fnirs_channel_selector, fnirs_df, mo, pl):
         _pair = _lbl.replace(" HbO", "").replace(" HbR", "")
         _chrom = "HbO" if "HbO" in _lbl else "HbR"
         for _rob, _cond in [(True, "Robot"), (False, "No-Robot")]:
-            _vals = (
-                _fnirs_ch_statsFiltered.filter(
-                    (pl.col("is_robot") == _rob) & (pl.col("time_sec") >= 0)
-                )[_col].to_numpy()
-                * 1e6
+            # Compute the averaged curve (matching graph: group_by time_sec → mean)
+            _curve = (
+                _fnirs_ch_statsFiltered.filter(pl.col("is_robot") == _rob)
+                .group_by("time_sec")
+                .agg(pl.col(_col).mean().alias("val"))
+                .sort("time_sec")
+                .with_columns((pl.col("val") * 1e6).alias("val"))
             )
-            if len(_vals) == 0:
+            _curve_post = _curve.filter(pl.col("time_sec") >= 0)
+            _curve_bl = _curve.filter(pl.col("time_sec") < 0)
+
+            if _curve_post.height == 0:
                 continue
-            _bl_vals = (
-                _fnirs_ch_bl.filter(pl.col("is_robot") == _rob)[_col].to_numpy()
-                * 1e6
-            )
-            _bl_mean = _bl_vals.mean() if len(_bl_vals) > 0 else 0.0
+
+            _vals_mean = _curve_post["val"].mean()
+            _vals_max = _curve_post["val"].max()
+            _bl_mean = _curve_bl["val"].mean() if _curve_bl.height > 0 else 0.0
             _fnirs_ch_lines.append(
-                f"| {_pair} | {_chrom} | {_cond} | {_vals.mean():.3f} | {_vals.max():.3f} | {_bl_mean:.3f} |"
+                f"| {_pair} | {_chrom} | {_cond} | {_vals_mean:.3f} | {_vals_max:.3f} | {_bl_mean:.3f} |"
             )
 
     _fnirs_ch_tbl = (
@@ -573,10 +607,12 @@ def _(fnirs_channel_options, fnirs_channel_selector, fnirs_df, mo, pl):
     )
     _fnirs_ch_tbl += "\n".join(_fnirs_ch_lines)
 
-    mo.md(f"""
-    ### fNIRS Per-Channel Summary
+    _fn = " with baseline correction" if fnirs_baseline_switch.value else ""
 
-    Mean and max concentration (μM) per source-detector channel, across all runs and time points.
+    mo.md(f"""
+    ### fNIRS Per-Channel Summary{_fn}
+
+    Mean and max concentration (μM) per source-detector channel, from the condition-level averaged curve (matching the graph).
 
     {_fnirs_ch_tbl}
     """)
@@ -757,47 +793,77 @@ def _(fnirs_df, mo):
 
 
 @app.cell(hide_code=True)
-def _(fnirs_df, fnirs_task_selector, mo, pl):
+def _(fnirs_baseline_switch, fnirs_df, fnirs_task_selector, mo, pl):
     # fNIRS Task Plot Summary Stats
-    # Reuses: fnirs_df, pl, mo, fnirs_task_selector from existing cells
+    # Matches: fNIRS Per-Task Interactive Plot logic
 
     _fnirs_task_statsFiltered = fnirs_df.filter(
         (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") <= 15.0)
     )
     _fnirs_task_hbo_cols_s = [c for c in fnirs_df.columns if c.endswith("_hbo")]
     _fnirs_task_hbr_cols_s = [c for c in fnirs_df.columns if c.endswith("_hbr")]
-    _fnirs_task_bl = _fnirs_task_statsFiltered.filter(pl.col("time_sec") < 0)
 
     _fnirs_task_lines = []
     for _task in fnirs_task_selector.value:
         _tdf = _fnirs_task_statsFiltered.filter(pl.col("task") == _task)
-        _bl_tdf = _fnirs_task_bl.filter(pl.col("task") == _task)
+
         for _rob, _lbl in [(True, "Robot"), (False, "No-Robot")]:
             _cdf = _tdf.filter(pl.col("is_robot") == _rob)
             _runs = _cdf.select("run_id", "task_instance").unique().height
             if _runs == 0:
                 continue
-            _cdf_post = _cdf.filter(pl.col("time_sec") >= 0)
-            _ra = _cdf_post.with_columns(
+
+            # Average channels → hbo_mean, hbr_mean (matching graph step 1)
+            _cdf_avg = _cdf.with_columns(
                 [
-                    pl.mean_horizontal(_fnirs_task_hbo_cols_s).alias("_hbo"),
-                    pl.mean_horizontal(_fnirs_task_hbr_cols_s).alias("_hbr"),
+                    pl.mean_horizontal(_fnirs_task_hbo_cols_s).alias("hbo_mean"),
+                    pl.mean_horizontal(_fnirs_task_hbr_cols_s).alias("hbr_mean"),
                 ]
             )
-            _hbo_m = _ra["_hbo"].mean() * 1e6
-            _hbo_x = _ra["_hbo"].max() * 1e6
-            _hbr_m = _ra["_hbr"].mean() * 1e6
-            _hbr_x = _ra["_hbr"].max() * 1e6
-            # Baseline
-            _bl_cdf = _bl_tdf.filter(pl.col("is_robot") == _rob)
-            _bl_ra = _bl_cdf.with_columns(
-                [
-                    pl.mean_horizontal(_fnirs_task_hbo_cols_s).alias("_hbo"),
-                    pl.mean_horizontal(_fnirs_task_hbr_cols_s).alias("_hbr"),
-                ]
+
+            # Baseline correction (matching graph step 2)
+            if fnirs_baseline_switch.value:
+                for _col in ["hbo_mean", "hbr_mean"]:
+                    _bl = (
+                        _cdf_avg.filter(pl.col("time_sec") < 0)
+                        .group_by(["run_id", "task_instance"])
+                        .agg(pl.col(_col).mean().alias("_base"))
+                    )
+                    _cdf_avg = (
+                        _cdf_avg.join(_bl, on=["run_id", "task_instance"], how="left")
+                        .with_columns((pl.col(_col) - pl.col("_base")).alias(_col))
+                        .drop("_base")
+                    )
+
+            # Average across runs per time_sec (matching graph step 3)
+            _task_curve = (
+                _cdf_avg.group_by("time_sec")
+                .agg(
+                    [
+                        pl.col("hbo_mean").mean().alias("hbo"),
+                        pl.col("hbr_mean").mean().alias("hbr"),
+                    ]
+                )
+                .sort("time_sec")
             )
-            _hbo_bl = _bl_ra["_hbo"].mean() * 1e6 if _bl_ra.height > 0 else 0.0
-            _hbr_bl = _bl_ra["_hbr"].mean() * 1e6 if _bl_ra.height > 0 else 0.0
+
+            # Post-stimulus: 0–15s
+            _post = _task_curve.filter(
+                (pl.col("time_sec") >= 0) & (pl.col("time_sec") <= 15.0)
+            )
+            # Baseline: -5–0s
+            _baseline = _task_curve.filter(
+                (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") < 0)
+            )
+
+            # Convert to μM
+            _hbo_m = _post["hbo"].mean() * 1e6 if _post.height > 0 else 0.0
+            _hbo_x = _post["hbo"].max() * 1e6 if _post.height > 0 else 0.0
+            _hbr_m = _post["hbr"].mean() * 1e6 if _post.height > 0 else 0.0
+            _hbr_x = _post["hbr"].max() * 1e6 if _post.height > 0 else 0.0
+            _hbo_bl = _baseline["hbo"].mean() * 1e6 if _baseline.height > 0 else 0.0
+            _hbr_bl = _baseline["hbr"].mean() * 1e6 if _baseline.height > 0 else 0.0
+
             _fnirs_task_lines.append(
                 f"| {_task} | {_lbl} | {_runs} | {_hbo_m:.3f} | {_hbo_x:.3f} | {_hbo_bl:.3f} | {_hbr_m:.3f} | {_hbr_x:.3f} | {_hbr_bl:.3f} |"
             )
@@ -806,10 +872,12 @@ def _(fnirs_df, fnirs_task_selector, mo, pl):
     _fnirs_task_tbl += "|------|-----------|------|---------------|--------------|-------------------|---------------|--------------|-------------------|\n"
     _fnirs_task_tbl += "\n".join(_fnirs_task_lines)
 
-    mo.md(f"""
-    ### fNIRS Per-Task Summary
+    _fn = " with baseline correction" if fnirs_baseline_switch.value else ""
 
-    Mean and max concentration (μM) of the global channel average, across all runs per task and condition.
+    mo.md(f"""
+    ### fNIRS Per-Task Summary{_fn}
+
+    Mean and max concentration (μM) of the global channel average, from the condition-level averaged curve (matching the graph).
 
     {_fnirs_task_tbl}
     """)
@@ -1250,8 +1318,8 @@ def _(emg_df, mo):
 
 @app.cell(hide_code=True)
 def _(
+    emg_baseline_switch,
     emg_df,
-    emg_ov_filter_switch,
     emg_sens_filter_switch,
     emg_sensor_options,
     emg_sensor_selector,
@@ -1260,11 +1328,11 @@ def _(
     prepare_emg_for_analysis,
 ):
     # EMG Sensor Plot Summary Stats
-    # Reuses: emg_df, pl, mo, emg_sensor_selector, emg_sensor_options, filter_rms, emg_sens_filter_switch
+    # Matches: EMG Per-Sensor Interactive Plot logic
 
     _emg_src = prepare_emg_for_analysis(
         emg_df,
-        apply_filter=emg_ov_filter_switch.value,
+        apply_filter=emg_sens_filter_switch.value,
         time_min=-5.0,
         time_max=15.0,
     )
@@ -1272,29 +1340,46 @@ def _(
     _emg_ss_sf = _emg_src.filter(
         (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") <= 15.0)
     )
-    _emg_ss_bl = _emg_ss_sf.filter(pl.col("time_sec") < 0)
+
+    # Baseline correction (matching graph logic)
+    _emg_ss_selected = [
+        emg_sensor_options[_ch] for _ch in emg_sensor_selector.value
+    ]
+    if emg_baseline_switch.value and _emg_ss_selected:
+        for _col in _emg_ss_selected:
+            _bl = (
+                _emg_ss_sf.filter(pl.col("time_sec") < 0)
+                .group_by(["run_id", "task_instance"])
+                .agg(pl.col(_col).mean().alias("_base"))
+            )
+            _emg_ss_sf = (
+                _emg_ss_sf.join(_bl, on=["run_id", "task_instance"], how="left")
+                .with_columns((pl.col(_col) - pl.col("_base")).alias(_col))
+                .drop("_base")
+            )
 
     _emg_ss_lines = []
     for _lbl in emg_sensor_selector.value:
         _col = emg_sensor_options[_lbl]
         for _rob, _cond in [(True, "Robot"), (False, "No-Robot")]:
-            _vals = (
-                _emg_ss_sf.filter(
-                    (pl.col("is_robot") == _rob) & (pl.col("time_sec") >= 0)
-                )[_col]
-                .drop_nulls()
-                .to_numpy()
+            # Compute the averaged curve (matching graph: group_by time_sec → mean)
+            _curve = (
+                _emg_ss_sf.filter(pl.col("is_robot") == _rob)
+                .group_by("time_sec")
+                .agg(pl.col(_col).mean().alias("val"))
+                .sort("time_sec")
             )
-            if len(_vals) == 0:
+            _curve_post = _curve.filter(pl.col("time_sec") >= 0)
+            _curve_bl = _curve.filter(pl.col("time_sec") < 0)
+
+            if _curve_post.height == 0:
                 continue
-            _bl_vals = (
-                _emg_ss_bl.filter(pl.col("is_robot") == _rob)[_col]
-                .drop_nulls()
-                .to_numpy()
-            )
-            _bl_mean = _bl_vals.mean() if len(_bl_vals) > 0 else 0.0
+
+            _vals_mean = _curve_post["val"].mean()
+            _vals_max = _curve_post["val"].max()
+            _bl_mean = _curve_bl["val"].mean() if _curve_bl.height > 0 else 0.0
             _emg_ss_lines.append(
-                f"| {_lbl} | {_cond} | {_vals.mean():.4f} | {_vals.max():.4f} | {_bl_mean:.4f} |"
+                f"| {_lbl} | {_cond} | {_vals_mean:.4f} | {_vals_max:.4f} | {_bl_mean:.4f} |"
             )
 
     _emg_ss_tbl = "| Sensor | Condition | Mean (mV) | Max (mV) | Baseline (mV) |\n"
@@ -1304,11 +1389,12 @@ def _(
     _emg_ss_tbl += "\n".join(_emg_ss_lines)
 
     _fn = " (bandpass + RMS)" if emg_sens_filter_switch.value else ""
+    _bl = " with baseline correction" if emg_baseline_switch.value else ""
 
     mo.md(f"""
-    ### EMG Per-Sensor Summary{_fn}
+    ### EMG Per-Sensor Summary{_fn}{_bl}
 
-    Mean and max EMG (mV) per sensor, across all runs (0\u201315s post-stimulus).
+    Mean and max EMG (mV) per sensor, from the condition-level averaged curve (matching the graph).
 
     {_emg_ss_tbl}
     """)
@@ -1461,6 +1547,7 @@ def _(emg_df, mo):
 
 @app.cell(hide_code=True)
 def _(
+    emg_baseline_switch,
     emg_df,
     emg_task_filter_switch,
     emg_task_selector,
@@ -1469,7 +1556,7 @@ def _(
     prepare_emg_for_analysis,
 ):
     # EMG Task Plot Summary Stats
-    # Reuses: emg_df, pl, mo, emg_task_selector, filter_rms, emg_task_filter_switch
+    # Matches: EMG Per-Task Interactive Plot logic
 
     _emg_src = prepare_emg_for_analysis(
         emg_df,
@@ -1482,28 +1569,55 @@ def _(
         (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") <= 15.0)
     )
     _emg_ts_ec = [c for c in _emg_src.columns if "EMG" in c and c.endswith("(mV)")]
-    _emg_ts_bl = _emg_ts_sf.filter(pl.col("time_sec") < 0)
 
     _emg_ts_lines = []
     for _task in emg_task_selector.value:
         _tdf = _emg_ts_sf.filter(pl.col("task") == _task)
-        _bl_tdf = _emg_ts_bl.filter(pl.col("task") == _task)
+
         for _rob, _lbl in [(True, "Robot"), (False, "No-Robot")]:
             _cdf = _tdf.filter(pl.col("is_robot") == _rob)
             _epochs = _cdf.select("run_id", "task_instance").unique().height
             if _epochs == 0:
                 continue
-            _cdf_post = _cdf.filter(pl.col("time_sec") >= 0)
-            _ra = _cdf_post.with_columns(
-                pl.mean_horizontal(_emg_ts_ec).alias("_emg")
+
+            # Average sensors → emg_mean (matching graph step 1)
+            _cdf_avg = _cdf.with_columns(
+                pl.mean_horizontal(_emg_ts_ec).alias("emg_mean")
             )
-            _emg_m = _ra["_emg"].mean()
-            _emg_x = _ra["_emg"].max()
-            _bl_cdf = _bl_tdf.filter(pl.col("is_robot") == _rob)
-            _bl_ra = _bl_cdf.with_columns(
-                pl.mean_horizontal(_emg_ts_ec).alias("_emg")
+
+            # Baseline correction (matching graph step 2)
+            if emg_baseline_switch.value:
+                _bl = (
+                    _cdf_avg.filter(pl.col("time_sec") < 0)
+                    .group_by(["run_id", "task_instance"])
+                    .agg(pl.col("emg_mean").mean().alias("_base"))
+                )
+                _cdf_avg = (
+                    _cdf_avg.join(_bl, on=["run_id", "task_instance"], how="left")
+                    .with_columns((pl.col("emg_mean") - pl.col("_base")).alias("emg_mean"))
+                    .drop("_base")
+                )
+
+            # Average across runs per time_sec (matching graph step 3)
+            _task_curve = (
+                _cdf_avg.group_by("time_sec")
+                .agg(pl.col("emg_mean").mean().alias("emg"))
+                .sort("time_sec")
             )
-            _emg_bl = _bl_ra["_emg"].mean() if _bl_ra.height > 0 else 0.0
+
+            # Post-stimulus: 0–15s
+            _post = _task_curve.filter(
+                (pl.col("time_sec") >= 0) & (pl.col("time_sec") <= 15.0)
+            )
+            # Baseline: -5–0s
+            _baseline = _task_curve.filter(
+                (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") < 0)
+            )
+
+            _emg_m = _post["emg"].mean() if _post.height > 0 else 0.0
+            _emg_x = _post["emg"].max() if _post.height > 0 else 0.0
+            _emg_bl = _baseline["emg"].mean() if _baseline.height > 0 else 0.0
+
             _emg_ts_lines.append(
                 f"| {_task} | {_lbl} | {_epochs} | {_emg_m:.4f} | {_emg_x:.4f} | {_emg_bl:.4f} |"
             )
@@ -1513,11 +1627,12 @@ def _(
     _emg_ts_tbl += "\n".join(_emg_ts_lines)
 
     _fn = " (bandpass + RMS)" if emg_task_filter_switch.value else ""
+    _bl = " with baseline correction" if emg_baseline_switch.value else ""
 
     mo.md(f"""
-    ### EMG Per-Task Summary{_fn}
+    ### EMG Per-Task Summary{_fn}{_bl}
 
-    Mean and max EMG (mV) of the global sensor average, across all runs per task and condition (0\u201315s post-stimulus).
+    Mean and max EMG (mV) of the global sensor average, from the condition-level averaged curve (matching the graph).
 
     {_emg_ts_tbl}
     """)
