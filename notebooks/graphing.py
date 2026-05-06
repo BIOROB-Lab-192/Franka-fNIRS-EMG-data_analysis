@@ -117,16 +117,6 @@ def _(filter_rms, np, pl):
 
 
     def filter_rms_per_epoch(emg_df):
-        """Apply filter_rms to each (run_id, task_instance) independently.
-        Avoids cross-epoch artifacts from sosfiltfilt."""
-        return pl.concat(
-            [
-                filter_rms(g.sort("time_sec"))
-                for _, g in emg_df.group_by("run_id", "task_instance")
-            ]
-        )
-
-    def filter_rms_per_epoch(emg_df):
         """
         Apply filter_rms independently to each EMG epoch.
 
