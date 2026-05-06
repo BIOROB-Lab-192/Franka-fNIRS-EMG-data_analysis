@@ -7,6 +7,8 @@ wheels/
 *.egg-info
 __marimo__/
 layouts/
+*.csv
+*.zip
 
 # Virtual environments
 .venv
@@ -15,3 +17,4 @@ data/
 figures/
 .hermes/
 export/
+models/
