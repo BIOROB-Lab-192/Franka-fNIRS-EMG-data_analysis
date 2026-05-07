@@ -448,3 +448,124 @@ print("\nSaved:")
 print(f"  Window-level predictions: {WINDOW_OUT}")
 print(f"  Run-level predictions:    {RUN_OUT}")
 print(f"  Summary:                  {SUMMARY_OUT}")
+
+# ---------------------------------------------------------------------
+# OVERALL SUMMARY PRINT
+# ---------------------------------------------------------------------
+
+print("\n" + "=" * 70)
+print("OVERALL PRIOR-CONFIDENCE FUSION SUMMARY")
+print("=" * 70)
+
+print(f"Fusion method: Prior-biased confidence-weighted late fusion")
+print(f"Base weights: EMG={BASE_W_EMG}, fNIRS={BASE_W_FNIRS}")
+print(f"Decision threshold: {THRESHOLD}")
+print(f"Confidence power: {CONF_POWER}")
+print(f"Rows/windows analyzed: {len(df)}")
+print(f"Runs analyzed: {run_df['held_out_run'].nunique()}")
+print(f"Mean windows per run: {df.groupby('held_out_run').size().mean():.1f}")
+
+print("\nAverage dynamic fusion weights:")
+print(f"  EMG:   {df['dynamic_w_emg'].mean():.4f}")
+print(f"  fNIRS: {df['dynamic_w_fnirs'].mean():.4f}")
+
+print("\nPerformance summary:")
+summary_print = summary_df.copy()
+summary_print["accuracy_pct"] = summary_print["accuracy"] * 100
+summary_print["balanced_accuracy_pct"] = summary_print["balanced_accuracy"] * 100
+summary_print["f1_robot_pct"] = summary_print["f1_robot"] * 100
+
+display_cols = [
+    "level",
+    "aggregation",
+    "accuracy",
+    "accuracy_pct",
+    "balanced_accuracy",
+    "precision_robot",
+    "recall_robot",
+    "f1_robot",
+    "auc",
+]
+
+print(
+    summary_print[display_cols]
+    .sort_values(["level", "accuracy", "auc"], ascending=[True, False, False])
+    .to_string(
+        index=False,
+        formatters={
+            "accuracy": "{:.4f}".format,
+            "accuracy_pct": "{:.1f}%".format,
+            "balanced_accuracy": "{:.4f}".format,
+            "precision_robot": "{:.4f}".format,
+            "recall_robot": "{:.4f}".format,
+            "f1_robot": "{:.4f}".format,
+            "auc": lambda x: "nan" if pd.isna(x) else f"{x:.4f}",
+        },
+    )
+)
+
+best_overall = summary_df.sort_values(
+    ["accuracy", "balanced_accuracy", "f1_robot", "auc"],
+    ascending=False,
+).iloc[0]
+
+best_run = summary_df[summary_df["level"] == "run"].sort_values(
+    ["accuracy", "balanced_accuracy", "f1_robot", "auc"],
+    ascending=False,
+).iloc[0]
+
+best_window = summary_df[summary_df["level"] == "window"].sort_values(
+    ["accuracy", "balanced_accuracy", "f1_robot", "auc"],
+    ascending=False,
+).iloc[0]
+
+print("\nBest overall result:")
+print(
+    f"  {best_overall['level']} / {best_overall['aggregation']} | "
+    f"accuracy={best_overall['accuracy']:.4f} "
+    f"({best_overall['accuracy'] * 100:.1f}%) | "
+    f"balanced_accuracy={best_overall['balanced_accuracy']:.4f} | "
+    f"precision_robot={best_overall['precision_robot']:.4f} | "
+    f"recall_robot={best_overall['recall_robot']:.4f} | "
+    f"f1_robot={best_overall['f1_robot']:.4f} | "
+    f"auc={best_overall['auc']:.4f}"
+)
+
+print("\nBest window-level result:")
+print(
+    f"  {best_window['aggregation']} | "
+    f"accuracy={best_window['accuracy']:.4f} "
+    f"({best_window['accuracy'] * 100:.1f}%) | "
+    f"balanced_accuracy={best_window['balanced_accuracy']:.4f} | "
+    f"f1_robot={best_window['f1_robot']:.4f} | "
+    f"auc={best_window['auc']:.4f}"
+)
+
+print("\nBest run-level result:")
+print(
+    f"  {best_run['aggregation']} | "
+    f"accuracy={best_run['accuracy']:.4f} "
+    f"({best_run['accuracy'] * 100:.1f}%) | "
+    f"balanced_accuracy={best_run['balanced_accuracy']:.4f} | "
+    f"f1_robot={best_run['f1_robot']:.4f} | "
+    f"auc={best_run['auc']:.4f}"
+)
+
+print("\nRun-level correctness counts:")
+for aggregation, pred_col, correct_col in [
+    ("mean_probability", "pred_prior_conf_mean", "correct_prior_conf_mean"),
+    ("median_probability", "pred_prior_conf_median", "correct_prior_conf_median"),
+    ("majority_vote", "pred_prior_conf_majority", "correct_prior_conf_majority"),
+]:
+    n_correct = int(run_df[correct_col].sum())
+    n_total = int(len(run_df))
+    print(
+        f"  {aggregation:<18}: "
+        f"{n_correct}/{n_total} correct "
+        f"({100 * n_correct / n_total:.1f}%)"
+    )
+
+print("\nSaved outputs:")
+print(f"  Window-level predictions: {WINDOW_OUT}")
+print(f"  Run-level predictions:    {RUN_OUT}")
+print(f"  Summary CSV:              {SUMMARY_OUT}")

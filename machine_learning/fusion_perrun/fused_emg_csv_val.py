@@ -1,29 +1,43 @@
-import pandas as pd
-import numpy as np
 from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from matplotlib import pyplot as plt
 from sklearn.metrics import (
     accuracy_score,
     balanced_accuracy_score,
+    confusion_matrix,
+    f1_score,
     precision_score,
     recall_score,
-    f1_score,
     roc_auc_score,
-    confusion_matrix,
 )
 
 # ---------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------
 
-FNIRS_PATH = Path("./machine_learning/fNIRS_perrun/export/predictions_window_level_loocv.csv")
-EMG_PATH = Path("./machine_learning/EMG_perrun/export/predictions_window_level_loocv.csv")
+FNIRS_PATH = Path(
+    "./machine_learning/fNIRS_perrun/export/predictions_window_level_loocv.csv"
+)
+EMG_PATH = Path(
+    "./machine_learning/EMG_perrun/export/predictions_window_level_loocv.csv"
+)
 
 OUT_DIR = Path("./machine_learning/fusion_perrun/export")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
+FIG_OUT = Path("./machine_learning/fusion_perrun/figures")
+
 WINDOW_OUT = OUT_DIR / "fusion_window_level_loocv_compare_methods.csv"
 RUN_OUT = OUT_DIR / "fusion_run_level_loocv_compare_methods.csv"
 
+CM_WINDOW_PROBAVG_OUT = FIG_OUT / "confusion_matrix_probavg_window.png"
+CM_RUN_PROBAVG_MEAN_OUT = FIG_OUT / "confusion_matrix_probavg_run_mean.png"
+CM_RUN_PROBAVG_MEDIAN_OUT = FIG_OUT / "confusion_matrix_probavg_run_median.png"
+CM_RUN_PROBAVG_MAJORITY_OUT = FIG_OUT / "confusion_matrix_probavg_run_majority.png"
+
+FOLD_ACC_PROBAVG_OUT = FIG_OUT / "fold_window_accuracy_probavg.png"
 # Pre-specified fusion rule
 W_FNIRS = 0.2
 W_EMG = 0.8
@@ -35,6 +49,68 @@ EPS = 1e-6
 # ---------------------------------------------------------------------
 # HELPERS
 # ---------------------------------------------------------------------
+
+
+def plot_confusion_matrix(all_labels, all_preds, save_path, title):
+    cm = confusion_matrix(all_labels, all_preds, labels=[0, 1])
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    im = ax.imshow(cm, interpolation="nearest", cmap=plt.cm.Blues)
+    ax.figure.colorbar(im, ax=ax)
+
+    ax.set(
+        xticks=[0, 1],
+        yticks=[0, 1],
+        xticklabels=["No-Robot", "Robot"],
+        yticklabels=["No-Robot", "Robot"],
+        ylabel="True Label",
+        xlabel="Predicted Label",
+        title=title,
+    )
+
+    thresh = cm.max() / 2 if cm.max() > 0 else 0
+
+    for i in range(2):
+        for j in range(2):
+            ax.text(
+                j,
+                i,
+                format(cm[i, j], "d"),
+                ha="center",
+                va="center",
+                color="white" if cm[i, j] > thresh else "black",
+                fontsize=16,
+                fontweight="bold",
+            )
+
+    plt.tight_layout()
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_fold_accuracy(fold_accs, fold_names, save_path):
+    fig, ax = plt.subplots(figsize=(10, 4))
+
+    ax.bar(range(1, len(fold_accs) + 1), fold_accs)
+
+    ax.axhline(
+        y=np.mean(fold_accs),
+        linestyle="--",
+        label=f"Mean: {np.mean(fold_accs):.3f}",
+    )
+
+    ax.set_xlabel("Fold / held-out run")
+    ax.set_ylabel("Window-level accuracy")
+    ax.set_title("Per-Fold Window-Level Accuracy")
+    ax.set_xticks(range(1, len(fold_accs) + 1))
+    ax.set_xticklabels(fold_names, rotation=45, ha="right", fontsize=9)
+    ax.set_ylim([0, 1.05])
+    ax.legend()
+
+    plt.tight_layout()
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
 
 def get_auc(y_true, y_prob):
     try:
@@ -51,9 +127,15 @@ def print_metrics(title, y_true, y_pred, y_prob):
     print("=" * 70)
     print(f"Accuracy:          {accuracy_score(y_true, y_pred):.4f}")
     print(f"Balanced accuracy: {balanced_accuracy_score(y_true, y_pred):.4f}")
-    print(f"Precision robot:   {precision_score(y_true, y_pred, pos_label=1, zero_division=0):.4f}")
-    print(f"Recall robot:      {recall_score(y_true, y_pred, pos_label=1, zero_division=0):.4f}")
-    print(f"F1 robot:          {f1_score(y_true, y_pred, pos_label=1, zero_division=0):.4f}")
+    print(
+        f"Precision robot:   {precision_score(y_true, y_pred, pos_label=1, zero_division=0):.4f}"
+    )
+    print(
+        f"Recall robot:      {recall_score(y_true, y_pred, pos_label=1, zero_division=0):.4f}"
+    )
+    print(
+        f"F1 robot:          {f1_score(y_true, y_pred, pos_label=1, zero_division=0):.4f}"
+    )
     print(f"AUC:               {get_auc(y_true, y_prob):.4f}")
     print("Confusion matrix [[TN, FP], [FN, TP]]:")
     print(confusion_matrix(y_true, y_pred, labels=[0, 1]))
@@ -147,7 +229,9 @@ df = fnirs.merge(
 )
 
 if df.empty:
-    raise ValueError("Merged dataframe is empty. Check held_out_run/task_instance alignment.")
+    raise ValueError(
+        "Merged dataframe is empty. Check held_out_run/task_instance alignment."
+    )
 
 if not np.all(df["true_label_fnirs"] == df["true_label_emg"]):
     bad = df[df["true_label_fnirs"] != df["true_label_emg"]]
@@ -168,17 +252,12 @@ print(f"Fusion weights: EMG={W_EMG}, fNIRS={W_FNIRS}, threshold={THRESHOLD}")
 # ---------------------------------------------------------------------
 
 df["prob_robot_fused_probavg"] = (
-    W_FNIRS * df["prob_robot_fnirs"]
-    + W_EMG * df["prob_robot_emg"]
+    W_FNIRS * df["prob_robot_fnirs"] + W_EMG * df["prob_robot_emg"]
 )
 
-df["pred_fused_probavg"] = (
-    df["prob_robot_fused_probavg"] >= THRESHOLD
-).astype(int)
+df["pred_fused_probavg"] = (df["prob_robot_fused_probavg"] >= THRESHOLD).astype(int)
 
-df["correct_fused_probavg"] = (
-    df["pred_fused_probavg"] == df["true_label"]
-)
+df["correct_fused_probavg"] = df["pred_fused_probavg"] == df["true_label"]
 
 
 # ---------------------------------------------------------------------
@@ -189,19 +268,14 @@ df["logit_robot_fnirs"] = logit(df["prob_robot_fnirs"])
 df["logit_robot_emg"] = logit(df["prob_robot_emg"])
 
 df["logit_robot_fused"] = (
-    W_FNIRS * df["logit_robot_fnirs"]
-    + W_EMG * df["logit_robot_emg"]
+    W_FNIRS * df["logit_robot_fnirs"] + W_EMG * df["logit_robot_emg"]
 )
 
 df["prob_robot_fused_logit"] = sigmoid(df["logit_robot_fused"])
 
-df["pred_fused_logit"] = (
-    df["prob_robot_fused_logit"] >= THRESHOLD
-).astype(int)
+df["pred_fused_logit"] = (df["prob_robot_fused_logit"] >= THRESHOLD).astype(int)
 
-df["correct_fused_logit"] = (
-    df["pred_fused_logit"] == df["true_label"]
-)
+df["correct_fused_logit"] = df["pred_fused_logit"] == df["true_label"]
 
 
 # ---------------------------------------------------------------------
@@ -214,11 +288,9 @@ window_cols = [
     "true_label",
     "prob_robot_fnirs",
     "prob_robot_emg",
-
     "prob_robot_fused_probavg",
     "pred_fused_probavg",
     "correct_fused_probavg",
-
     "prob_robot_fused_logit",
     "pred_fused_logit",
     "correct_fused_logit",
@@ -281,41 +353,39 @@ for held_out_run, group in df.groupby("held_out_run"):
     pred_logit_median = int(logit_median >= THRESHOLD)
     pred_logit_majority = int(logit_majority_vote >= 0.5)
 
-    run_rows.append({
-        "held_out_run": held_out_run,
-        "true_label": true_label,
-        "n_windows": int(len(group)),
-
-        "prob_robot_fnirs_mean": prob_robot_fnirs_mean,
-        "prob_robot_emg_mean": prob_robot_emg_mean,
-
-        "probavg_mean": probavg_mean,
-        "pred_probavg_mean": pred_probavg_mean,
-        "correct_probavg_mean": pred_probavg_mean == true_label,
-
-        "probavg_median": probavg_median,
-        "pred_probavg_median": pred_probavg_median,
-        "correct_probavg_median": pred_probavg_median == true_label,
-
-        "probavg_window_vote_fraction": probavg_majority_vote,
-        "pred_probavg_majority": pred_probavg_majority,
-        "correct_probavg_majority": pred_probavg_majority == true_label,
-
-        "logit_mean": logit_mean,
-        "pred_logit_mean": pred_logit_mean,
-        "correct_logit_mean": pred_logit_mean == true_label,
-
-        "logit_median": logit_median,
-        "pred_logit_median": pred_logit_median,
-        "correct_logit_median": pred_logit_median == true_label,
-
-        "logit_window_vote_fraction": logit_majority_vote,
-        "pred_logit_majority": pred_logit_majority,
-        "correct_logit_majority": pred_logit_majority == true_label,
-
-        "window_accuracy_probavg_within_run": float(group["correct_fused_probavg"].mean()),
-        "window_accuracy_logit_within_run": float(group["correct_fused_logit"].mean()),
-    })
+    run_rows.append(
+        {
+            "held_out_run": held_out_run,
+            "true_label": true_label,
+            "n_windows": int(len(group)),
+            "prob_robot_fnirs_mean": prob_robot_fnirs_mean,
+            "prob_robot_emg_mean": prob_robot_emg_mean,
+            "probavg_mean": probavg_mean,
+            "pred_probavg_mean": pred_probavg_mean,
+            "correct_probavg_mean": pred_probavg_mean == true_label,
+            "probavg_median": probavg_median,
+            "pred_probavg_median": pred_probavg_median,
+            "correct_probavg_median": pred_probavg_median == true_label,
+            "probavg_window_vote_fraction": probavg_majority_vote,
+            "pred_probavg_majority": pred_probavg_majority,
+            "correct_probavg_majority": pred_probavg_majority == true_label,
+            "logit_mean": logit_mean,
+            "pred_logit_mean": pred_logit_mean,
+            "correct_logit_mean": pred_logit_mean == true_label,
+            "logit_median": logit_median,
+            "pred_logit_median": pred_logit_median,
+            "correct_logit_median": pred_logit_median == true_label,
+            "logit_window_vote_fraction": logit_majority_vote,
+            "pred_logit_majority": pred_logit_majority,
+            "correct_logit_majority": pred_logit_majority == true_label,
+            "window_accuracy_probavg_within_run": float(
+                group["correct_fused_probavg"].mean()
+            ),
+            "window_accuracy_logit_within_run": float(
+                group["correct_fused_logit"].mean()
+            ),
+        }
+    )
 
 run_df = pd.DataFrame(run_rows).sort_values("held_out_run")
 run_df.to_csv(RUN_OUT, index=False)
@@ -380,8 +450,12 @@ summary_rows = [
         "method": "probavg",
         "aggregation": "none",
         "accuracy": accuracy_score(y_true_w, df["pred_fused_probavg"]),
-        "balanced_accuracy": balanced_accuracy_score(y_true_w, df["pred_fused_probavg"]),
-        "f1_robot": f1_score(y_true_w, df["pred_fused_probavg"], pos_label=1, zero_division=0),
+        "balanced_accuracy": balanced_accuracy_score(
+            y_true_w, df["pred_fused_probavg"]
+        ),
+        "f1_robot": f1_score(
+            y_true_w, df["pred_fused_probavg"], pos_label=1, zero_division=0
+        ),
         "auc": get_auc(y_true_w, df["prob_robot_fused_probavg"]),
     },
     {
@@ -390,7 +464,9 @@ summary_rows = [
         "aggregation": "none",
         "accuracy": accuracy_score(y_true_w, df["pred_fused_logit"]),
         "balanced_accuracy": balanced_accuracy_score(y_true_w, df["pred_fused_logit"]),
-        "f1_robot": f1_score(y_true_w, df["pred_fused_logit"], pos_label=1, zero_division=0),
+        "f1_robot": f1_score(
+            y_true_w, df["pred_fused_logit"], pos_label=1, zero_division=0
+        ),
         "auc": get_auc(y_true_w, df["prob_robot_fused_logit"]),
     },
     {
@@ -398,8 +474,12 @@ summary_rows = [
         "method": "probavg",
         "aggregation": "mean_probability",
         "accuracy": accuracy_score(y_true_r, run_df["pred_probavg_mean"]),
-        "balanced_accuracy": balanced_accuracy_score(y_true_r, run_df["pred_probavg_mean"]),
-        "f1_robot": f1_score(y_true_r, run_df["pred_probavg_mean"], pos_label=1, zero_division=0),
+        "balanced_accuracy": balanced_accuracy_score(
+            y_true_r, run_df["pred_probavg_mean"]
+        ),
+        "f1_robot": f1_score(
+            y_true_r, run_df["pred_probavg_mean"], pos_label=1, zero_division=0
+        ),
         "auc": get_auc(y_true_r, run_df["probavg_mean"]),
     },
     {
@@ -407,8 +487,12 @@ summary_rows = [
         "method": "probavg",
         "aggregation": "median_probability",
         "accuracy": accuracy_score(y_true_r, run_df["pred_probavg_median"]),
-        "balanced_accuracy": balanced_accuracy_score(y_true_r, run_df["pred_probavg_median"]),
-        "f1_robot": f1_score(y_true_r, run_df["pred_probavg_median"], pos_label=1, zero_division=0),
+        "balanced_accuracy": balanced_accuracy_score(
+            y_true_r, run_df["pred_probavg_median"]
+        ),
+        "f1_robot": f1_score(
+            y_true_r, run_df["pred_probavg_median"], pos_label=1, zero_division=0
+        ),
         "auc": get_auc(y_true_r, run_df["probavg_median"]),
     },
     {
@@ -416,8 +500,12 @@ summary_rows = [
         "method": "probavg",
         "aggregation": "majority_vote",
         "accuracy": accuracy_score(y_true_r, run_df["pred_probavg_majority"]),
-        "balanced_accuracy": balanced_accuracy_score(y_true_r, run_df["pred_probavg_majority"]),
-        "f1_robot": f1_score(y_true_r, run_df["pred_probavg_majority"], pos_label=1, zero_division=0),
+        "balanced_accuracy": balanced_accuracy_score(
+            y_true_r, run_df["pred_probavg_majority"]
+        ),
+        "f1_robot": f1_score(
+            y_true_r, run_df["pred_probavg_majority"], pos_label=1, zero_division=0
+        ),
         "auc": get_auc(y_true_r, run_df["probavg_window_vote_fraction"]),
     },
     {
@@ -425,8 +513,12 @@ summary_rows = [
         "method": "logit",
         "aggregation": "mean_probability",
         "accuracy": accuracy_score(y_true_r, run_df["pred_logit_mean"]),
-        "balanced_accuracy": balanced_accuracy_score(y_true_r, run_df["pred_logit_mean"]),
-        "f1_robot": f1_score(y_true_r, run_df["pred_logit_mean"], pos_label=1, zero_division=0),
+        "balanced_accuracy": balanced_accuracy_score(
+            y_true_r, run_df["pred_logit_mean"]
+        ),
+        "f1_robot": f1_score(
+            y_true_r, run_df["pred_logit_mean"], pos_label=1, zero_division=0
+        ),
         "auc": get_auc(y_true_r, run_df["logit_mean"]),
     },
     {
@@ -434,8 +526,12 @@ summary_rows = [
         "method": "logit",
         "aggregation": "median_probability",
         "accuracy": accuracy_score(y_true_r, run_df["pred_logit_median"]),
-        "balanced_accuracy": balanced_accuracy_score(y_true_r, run_df["pred_logit_median"]),
-        "f1_robot": f1_score(y_true_r, run_df["pred_logit_median"], pos_label=1, zero_division=0),
+        "balanced_accuracy": balanced_accuracy_score(
+            y_true_r, run_df["pred_logit_median"]
+        ),
+        "f1_robot": f1_score(
+            y_true_r, run_df["pred_logit_median"], pos_label=1, zero_division=0
+        ),
         "auc": get_auc(y_true_r, run_df["logit_median"]),
     },
     {
@@ -443,8 +539,12 @@ summary_rows = [
         "method": "logit",
         "aggregation": "majority_vote",
         "accuracy": accuracy_score(y_true_r, run_df["pred_logit_majority"]),
-        "balanced_accuracy": balanced_accuracy_score(y_true_r, run_df["pred_logit_majority"]),
-        "f1_robot": f1_score(y_true_r, run_df["pred_logit_majority"], pos_label=1, zero_division=0),
+        "balanced_accuracy": balanced_accuracy_score(
+            y_true_r, run_df["pred_logit_majority"]
+        ),
+        "f1_robot": f1_score(
+            y_true_r, run_df["pred_logit_majority"], pos_label=1, zero_division=0
+        ),
         "auc": get_auc(y_true_r, run_df["logit_window_vote_fraction"]),
     },
 ]
@@ -456,7 +556,11 @@ summary_df.to_csv(summary_out, index=False)
 print("\n" + "=" * 70)
 print("SUMMARY")
 print("=" * 70)
-print(summary_df.sort_values(["level", "accuracy"], ascending=[True, False]).to_string(index=False))
+print(
+    summary_df.sort_values(["level", "accuracy"], ascending=[True, False]).to_string(
+        index=False
+    )
+)
 
 print("\nRun-level predictions:")
 print(run_df.to_string(index=False))
@@ -485,13 +589,17 @@ for _, row in core.iterrows():
         f"auc={row['auc']:.3f}"
     )
 
-best_run = summary_df[summary_df["level"] == "run"].sort_values(
-    "accuracy", ascending=False
-).iloc[0]
+best_run = (
+    summary_df[summary_df["level"] == "run"]
+    .sort_values("accuracy", ascending=False)
+    .iloc[0]
+)
 
-best_window = summary_df[summary_df["level"] == "window"].sort_values(
-    "accuracy", ascending=False
-).iloc[0]
+best_window = (
+    summary_df[summary_df["level"] == "window"]
+    .sort_values("accuracy", ascending=False)
+    .iloc[0]
+)
 
 print("\nBEST WINDOW:")
 print(
@@ -510,3 +618,71 @@ print(
     f"f1_robot={best_run['f1_robot']:.4f}, "
     f"auc={best_run['auc']:.4f}"
 )
+
+# ---------------------------------------------------------------------
+# SAVE PROBABILITY-AVERAGE CONFUSION MATRIX PLOTS
+# ---------------------------------------------------------------------
+
+plot_confusion_matrix(
+    all_labels=df["true_label"].values,
+    all_preds=df["pred_fused_probavg"].values,
+    save_path=CM_WINDOW_PROBAVG_OUT,
+    title="Probability-Average Fusion — Window Level",
+)
+
+plot_confusion_matrix(
+    all_labels=run_df["true_label"].values,
+    all_preds=run_df["pred_probavg_mean"].values,
+    save_path=CM_RUN_PROBAVG_MEAN_OUT,
+    title="Probability-Average Fusion — Run Level",
+)
+
+plot_confusion_matrix(
+    all_labels=run_df["true_label"].values,
+    all_preds=run_df["pred_probavg_median"].values,
+    save_path=CM_RUN_PROBAVG_MEDIAN_OUT,
+    title="Probability-Average Fusion — Run Level — Median Probability",
+)
+
+plot_confusion_matrix(
+    all_labels=run_df["true_label"].values,
+    all_preds=run_df["pred_probavg_majority"].values,
+    save_path=CM_RUN_PROBAVG_MAJORITY_OUT,
+    title="Probability-Average Fusion — Run Level — Majority Vote",
+)
+
+
+# ---------------------------------------------------------------------
+# SAVE PER-FOLD WINDOW-LEVEL ACCURACY PLOT — PROBABILITY AVERAGE
+# ---------------------------------------------------------------------
+
+fold_acc_df = (
+    df.groupby("held_out_run")
+    .agg(
+        window_accuracy=("correct_fused_probavg", "mean"),
+        n_windows=("true_label", "size"),
+    )
+    .reset_index()
+    .sort_values("held_out_run")
+)
+
+fold_accs = fold_acc_df["window_accuracy"].values
+fold_names = fold_acc_df["held_out_run"].astype(str).values
+
+plot_fold_accuracy(
+    fold_accs=fold_accs,
+    fold_names=fold_names,
+    save_path=FOLD_ACC_PROBAVG_OUT,
+)
+
+print("\n" + "=" * 70)
+print("SAVED PROBABILITY-AVERAGE PLOTS")
+print("=" * 70)
+print(f"Window confusion matrix:        {CM_WINDOW_PROBAVG_OUT}")
+print(f"Run mean confusion matrix:      {CM_RUN_PROBAVG_MEAN_OUT}")
+print(f"Run median confusion matrix:    {CM_RUN_PROBAVG_MEDIAN_OUT}")
+print(f"Run majority confusion matrix:  {CM_RUN_PROBAVG_MAJORITY_OUT}")
+print(f"Fold window accuracy plot:      {FOLD_ACC_PROBAVG_OUT}")
+
+print("\nPer-fold window-level probability-average accuracy:")
+print(fold_acc_df.to_string(index=False))
