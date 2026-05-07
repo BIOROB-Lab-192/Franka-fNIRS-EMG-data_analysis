@@ -17,6 +17,7 @@ def _():
     from itertools import compress
     import numpy as np
     import re
+    import io
 
     DATA_DIR = "data"
     RAW_DIR = f"{DATA_DIR}/raw"
@@ -32,24 +33,43 @@ def _():
     - **Figures:** `{FIGURES_DIR}`
     - **Current file:** `{SNIRF_FILE}`
     """)
-    return RAW_DIR, compress, mne, mo, np, plt
+    return RAW_DIR, io, mne, mo, np, plt
 
 
 @app.cell
 def _(RAW_DIR, mo):
     import sys
-    sys.path.insert(0, "/Users/haider/code/data_analysis")
+    import importlib
+    from pathlib import Path
+
+    REPO_DIR = Path("/Users/haider/code/Franka-fNIRS-EMG-data_analysis").resolve()
+
+    # Put repo at the very front
+    sys.path = [p for p in sys.path if Path(p or ".").resolve() != REPO_DIR]
+    sys.path.insert(0, str(REPO_DIR))
+
+    # Clear cached imports that may point to the wrong place
+    for name in list(sys.modules):
+        if name == "src" or name.startswith("src."):
+            del sys.modules[name]
+
+    importlib.invalidate_caches()
+
+    print("sys.path[0]:", sys.path[0])
+    print("loader exists:", (REPO_DIR / "src" / "loaders" / "loader.py").exists())
+
     from src.loaders.loader import load_data
 
-    data_files = load_data(RAW_DIR)
+    print("Success:", load_data)
 
-    mo.md(f"**Found {len(data_files)} participants:** `{list(data_files.keys())}`")
+    data_files = load_data(RAW_DIR) 
+    mo.md(f"**Found {len(data_files)} participants:** {list(data_files.keys())}")
     return (data_files,)
 
 
 @app.cell
 def _(data_files, mne, mo):
-    PATH = data_files["clarence_norobot_1"]["fNIRS"]
+    PATH = data_files["sam_robot_2"]["fNIRS"]
 
     raw = mne.io.read_raw_snirf(PATH, preload=True, verbose=False)
     raw.load_data()
@@ -86,13 +106,13 @@ def _(mne, mo, raw):
 
 
 @app.cell
-def _(compress, mne, mo, plt, raw_od):
+def _(mne, mo, plt, raw_od):
     sci = mne.preprocessing.nirs.scalp_coupling_index(raw_od)
     sci_fig, sci_ax = plt.subplots(layout="constrained")
     sci_ax.hist(sci)
     sci_ax.set(xlabel="Scalp Coupling Index", ylabel="Count", xlim=[0, 1])
 
-    raw_od.info["bads"] = list(compress(raw_od.ch_names, sci < 0.2))
+    # raw_od.info["bads"] = list(compress(raw_od.ch_names, sci < 0.2))
 
     plt.show()
 
@@ -226,14 +246,72 @@ def _(epochs, mne, plt):
 
 
 @app.cell
-def _(epochs, np, plt):
-    times = np.arange(-3.5, 13.2, 3.0)
+def _(epochs, plt, times):
+    # times = np.arange(-3.5, 13.2, 3.0)
     topomap_args = dict(extrapolate="local")
     epochs["task_8"].average(picks="hbo").plot_joint(
         times=times, topomap_args=topomap_args
     )
     plt.show()
     return
+
+
+@app.cell
+def _(epochs, io, mo, np):
+
+
+    evoked_hbo = epochs["task_8"].average(picks="hbo")
+    evoked_hbr = epochs["task_8"].average(picks="hbr")
+
+    times = np.arange(-5, 16, 5)
+
+    def make_paper_topomap(evoked, ch_type, title):
+        fig = evoked.plot_topomap(
+            times=times,
+            ch_type=ch_type,
+            colorbar=True,
+            size=3.0,
+            time_format="%0.0f s",   # smaller/cleaner: -5 s, 0 s, 5 s...
+            show=False,
+        )
+
+        fig.set_size_inches(12, 3.8)
+
+        # Make top time labels smaller
+        for ax in fig.axes:
+            if ax.get_title():
+                ax.set_title(ax.get_title(), fontsize=18, pad=8)
+
+        # Make colorbar / right axis larger
+        cbar_ax = fig.axes[-1]
+        cbar_ax.tick_params(labelsize=22)
+        # cbar_ax.set_ylabel("µM", fontsize=28, rotation=0, labelpad=22)
+        cbar_ax.yaxis.set_label_position("right")
+
+        # fig.suptitle(title, fontsize=22, y=1.02)
+
+        return fig
+
+    def fig_to_png(fig, dpi=250):
+        buffer = io.BytesIO()
+        fig.savefig(buffer, format="png", dpi=dpi, bbox_inches="tight")
+        buffer.seek(0)
+        return buffer.getvalue()
+
+    fig_hbo = make_paper_topomap(evoked_hbo, "hbo", "HbO: task 8")
+    fig_hbr = make_paper_topomap(evoked_hbr, "hbr", "HbR: task 8")
+
+    mo.hstack([
+        mo.vstack([
+            mo.md("## HbO: task 8"),
+            mo.image(fig_to_png(fig_hbo)),
+        ]),
+        mo.vstack([
+            mo.md("## HbR: task 8"),
+            mo.image(fig_to_png(fig_hbr)),
+        ]),
+    ])
+    return (times,)
 
 
 if __name__ == "__main__":

@@ -296,22 +296,34 @@ def _(norobot_epochs, os, plt, robot_epochs, task_names):
 
 
 @app.cell
-def _(norobot_epochs, np, plt, robot_epochs, task_names):
+def _(norobot_epochs, np, robot_epochs, task_names):
     jnt_tasks = task_names
     jnt_times = np.arange(-1.0, 12.0, 2.5)  # key timepoints for topomaps
 
     for jnt_task in jnt_tasks:
+        task_label = jnt_task.replace("_", " ").title()
+        # NoRobot figure
         jnt_fig = norobot_epochs[jnt_task].average(picks="hbo").plot_joint(
-            times=jnt_times, topomap_args=dict(extrapolate="local")
+            times=jnt_times,
+            ts_args=dict(
+                spatial_colors=True,
+                titles=dict(hbo=f"NoRobot — {task_label} — HbO")
+            ),
+            topomap_args=dict(extrapolate="local")
         )
-        jnt_fig.suptitle(f"NoRobot — {jnt_task} — HbO", fontsize=12)
+        jnt_fig.savefig(f"./figures/top_map/norobot_{jnt_task}_hbo.png")
 
+        # Robot figure
         jnt_fig2 = robot_epochs[jnt_task].average(picks="hbo").plot_joint(
-            times=jnt_times, topomap_args=dict(extrapolate="local")
+            times=jnt_times,
+            ts_args=dict(
+                spatial_colors=True,
+                titles=dict(hbo=f"Robot — {task_label} — HbO")
+            ),
+            topomap_args=dict(extrapolate="local")
         )
-        jnt_fig2.suptitle(f"Robot — {jnt_task} — HbO", fontsize=12)
+        jnt_fig2.savefig(f"./figures/top_map/robot_{jnt_task}_hbo.png")
 
-    plt.show()
     return
 
 

@@ -536,7 +536,14 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(fnirs_baseline_switch, fnirs_channel_options, fnirs_channel_selector, fnirs_df, mo, pl):
+def _(
+    fnirs_baseline_switch,
+    fnirs_channel_options,
+    fnirs_channel_selector,
+    fnirs_df,
+    mo,
+    pl,
+):
     # fNIRS Channel Plot Summary Stats
     # Matches: fNIRS Per-Channel Interactive Plot logic
 
@@ -1933,10 +1940,35 @@ def _(
     prepare_emg_for_analysis,
 ):
     # Per-Run Viewer Plot
-    # Reuses: fnirs_df, emg_df, pl, plt, np, pr_task_select, pr_robot_select, pr_run_select, pr_baseline_switch, pr_filter_switch, filter_rms
+    # Reuses: fnirs_df, emg_df, pl, plt, np, pr_task_select, pr_robot_select, pr_run_select,
+    # pr_baseline_switch, pr_filter_switch, filter_rms, prepare_emg_for_analysis
 
     _pr_TIME_MIN = -5.0
     _pr_TIME_MAX = 15.0
+
+    # ============================================================
+    # Print-friendly figure settings
+    # Letter paper, landscape orientation: 11 x 8.5 inches
+    # ============================================================
+    _pr_FIG_W = 11
+    _pr_FIG_H_PER_PANEL = 3
+
+    _pr_FONT = 20
+    _pr_TITLE_FONT = 22
+    _pr_LABEL_FONT = 22
+    _pr_TICK_FONT = 20
+    _pr_LEGEND_FONT = 20
+
+    plt.rcParams.update(
+        {
+            "font.size": _pr_FONT,
+            "axes.titlesize": _pr_TITLE_FONT,
+            "axes.labelsize": _pr_LABEL_FONT,
+            "xtick.labelsize": _pr_TICK_FONT,
+            "ytick.labelsize": _pr_TICK_FONT,
+            "legend.fontsize": _pr_LEGEND_FONT,
+        }
+    )
 
     _pr_hbo_cols = [c for c in fnirs_df.columns if c.endswith("_hbo")]
     _pr_hbr_cols = [c for c in fnirs_df.columns if c.endswith("_hbr")]
@@ -1945,35 +1977,64 @@ def _(
     _pr_emg_for_plot = prepare_emg_for_analysis(
         emg_df,
         apply_filter=pr_filter_switch.value,
-        time_min=-5.0,
-        time_max=15.0,
+        time_min=_pr_TIME_MIN,
+        time_max=_pr_TIME_MAX,
     )
+
     _pr_emg_cols = [
         c for c in _pr_emg_for_plot.columns if "EMG" in c and c.endswith("(mV)")
     ]
 
-    # EMG labels
-    _pr_emg_labels = []
-    for _c in _pr_emg_cols:
+    # ============================================================
+    # EMG label mapping
+    # ============================================================
+    def _rename_emg_label(_c):
         _parts = _c.split(" | ")
         _sensor_name = _parts[0]
-        _emg_ch = _parts[1].replace(" (mV)", "") if len(_parts) > 1 else _c
-        _pr_emg_labels.append(f"{_sensor_name} {_emg_ch}")
+        _emg_ch = _parts[1].replace(" (mV)", "") if len(_parts) > 1 else ""
+
+        _sensor_name_lower = _sensor_name.lower()
+        _emg_ch_lower = _emg_ch.lower()
+
+        # Sensor 1
+        if "sensor 1" in _sensor_name_lower:
+            return "Flexor Carpi Radialis"
+
+        # Sensor 2
+        if "sensor 2" in _sensor_name_lower:
+            return "Flexor Digitorum Superficialis"
+
+        # Sensor 3, channel 1
+        if "sensor 3" in _sensor_name_lower and (
+            "1" in _emg_ch_lower or "ch1" in _emg_ch_lower or "channel 1" in _emg_ch_lower
+        ):
+            return "Tricep Brachii"
+
+        # Sensor 3, channel 2
+        if "sensor 3" in _sensor_name_lower and (
+            "2" in _emg_ch_lower or "ch2" in _emg_ch_lower or "channel 2" in _emg_ch_lower
+        ):
+            return "Bicep Brachii"
+
+        # Fallback label if something does not match
+        return f"{_sensor_name} {_emg_ch}".strip()
+
+
+    _pr_emg_labels = [_rename_emg_label(_c) for _c in _pr_emg_cols]
 
     _ylabel_emg = "EMG RMS (mV)" if pr_filter_switch.value else "EMG (mV)"
 
     if pr_run_select.value is None or pr_task_select.value is None:
-        pr_fig, _ax = plt.subplots(figsize=(14, 3))
+        pr_fig, _ax = plt.subplots(figsize=(11, 3))
         _ax.text(
             0.5,
             0.5,
             "Select a run and task to view",
             ha="center",
             va="center",
-            fontsize=14,
+            fontsize=_pr_TITLE_FONT,
         )
         _ax.set_axis_off()
-
 
     else:
         _cond_filter = (
@@ -1987,17 +2048,16 @@ def _(
         _run_emg = _pr_emg_for_plot.filter(_cond_filter).sort("time_sec")
 
         if _run_fnirs.height == 0 and _run_emg.height == 0:
-            pr_fig, _ax = plt.subplots(figsize=(14, 3))
+            pr_fig, _ax = plt.subplots(figsize=(11, 3))
             _ax.text(
                 0.5,
                 0.5,
                 "No data matches this selection",
                 ha="center",
                 va="center",
-                fontsize=14,
+                fontsize=_pr_TITLE_FONT,
             )
             _ax.set_axis_off()
-
 
         else:
             # ============================================================
@@ -2042,8 +2102,10 @@ def _(
                     if np.any(_fnirs_bl):
                         _hbo_bl = np.nanmean(_hbo[_fnirs_bl])
                         _hbr_bl = np.nanmean(_hbr[_fnirs_bl])
+
                         if not np.isnan(_hbo_bl):
                             _hbo = _hbo - _hbo_bl
+
                         if not np.isnan(_hbr_bl):
                             _hbr = _hbr - _hbr_bl
 
@@ -2051,6 +2113,7 @@ def _(
             # EMG
             # ============================================================
             _emg_data = {}
+
             for _col in _pr_emg_cols:
                 _emg_s = (
                     _run_emg.select(["time_sec", _col])
@@ -2058,40 +2121,82 @@ def _(
                     .agg(pl.col(_col).mean().alias(_col))
                     .sort("time_sec")
                 )
+
                 _time = _emg_s["time_sec"].to_numpy()
                 _raw = _emg_s[_col].to_numpy().copy()
                 _emg_bl = _time < 0
+
                 if pr_baseline_switch.value:
                     _valid = ~np.isnan(_raw)
                     _bl_vals = _raw[_valid & _emg_bl]
+
                     if len(_bl_vals) > 0:
                         _raw[_valid] = _raw[_valid] - np.nanmean(_bl_vals)
+
                 _emg_data[_col] = {"time": _time, "data": _raw}
 
             # ============================================================
             # Figure
             # ============================================================
             _n_emg = len(_pr_emg_cols)
+
             pr_fig, _axes = plt.subplots(
                 _n_emg + 1,
                 1,
-                figsize=(14, 2.5 * (_n_emg + 1)),
+                figsize=(_pr_FIG_W, _pr_FIG_H_PER_PANEL * (_n_emg + 1)),
                 sharex=True,
-                gridspec_kw={"hspace": 0.15},
+                gridspec_kw={"hspace": 0.22},
             )
+
             if _n_emg == 0:
                 _axes = [_axes]
 
+            # ============================================================
             # fNIRS plot
+            # ============================================================
             if _has_fnirs and len(_fnirs_time) > 0:
                 _axes[0].plot(
-                    _fnirs_time, _hbo, label="HbO", color="red", linewidth=1.2
+                    _fnirs_time,
+                    _hbo,
+                    label="HbO",
+                    color="red",
+                    linewidth=1.2,
                 )
+
                 _axes[0].plot(
-                    _fnirs_time, _hbr, label="HbR", color="blue", linewidth=1.2
+                    _fnirs_time,
+                    _hbr,
+                    label="HbR",
+                    color="blue",
+                    linewidth=1.2,
                 )
-                _axes[0].set_ylabel("Concentration (\u03bcM)")
-                _axes[0].legend(loc="upper right", fontsize=8)
+
+                # Keep y-axis label short
+                _axes[0].set_ylabel(
+                    "μM",
+                    fontsize=_pr_LABEL_FONT,
+                    labelpad=8,
+                )
+
+                _axes[0].legend(loc="upper right", fontsize=_pr_LEGEND_FONT)
+
+                # Put fNIRS label inside the plot, like EMG labels
+                _axes[0].text(
+                    0.01,
+                    0.85,
+                    "fNIRS",
+                    transform=_axes[0].transAxes,
+                    ha="left",
+                    va="top",
+                    fontsize=_pr_TICK_FONT,
+                    bbox=dict(
+                        facecolor="white",
+                        edgecolor="none",
+                        alpha=0.75,
+                        pad=2,
+                    ),
+                )
+
             else:
                 _axes[0].text(
                     0.5,
@@ -2099,37 +2204,96 @@ def _(
                     "No fNIRS data",
                     ha="center",
                     va="center",
+                    fontsize=_pr_TITLE_FONT,
                     transform=_axes[0].transAxes,
                 )
-                _axes[0].set_ylabel("fNIRS")
 
-            _axes[0].axvline(x=0, color="gray", linestyle="--", alpha=0.5)
-            _axes[0].set_title(
-                f"fNIRS \u2014 {pr_run_select.value} \u2014 {pr_task_select.value} \u2014"
+                _axes[0].set_ylabel(
+                    "fNIRS",
+                    fontsize=_pr_LABEL_FONT,
+                    labelpad=8,
+                )
+
+            _axes[0].axvline(
+                x=0,
+                color="gray",
+                linestyle="--",
+                alpha=0.5,
             )
 
+            # Title intentionally removed for print-friendly figure
+            # _axes[0].set_title(
+            #     f"fNIRS — {pr_run_select.value} — {pr_task_select.value}",
+            #     fontsize=_pr_TITLE_FONT,
+            # )
+
+            # ============================================================
             # EMG plots
+            # ============================================================
             for i, (_col, _label) in enumerate(zip(_pr_emg_cols, _pr_emg_labels)):
                 _axes[i + 1].plot(
                     _emg_data[_col]["time"],
                     _emg_data[_col]["data"],
                     color=f"C{i}",
-                    linewidth=0.5,
+                    linewidth=0.7,
                 )
-                _axes[i + 1].set_ylabel(f"{_label}\n(mV)", fontsize=8)
-                _axes[i + 1].axvline(x=0, color="gray", linestyle="--", alpha=0.5)
 
-            _axes[-1].set_xlabel("Time (s)")
+                # Keep y-axis label short so labels do not overlap
+                _axes[i + 1].set_ylabel(
+                    "mV",
+                    fontsize=_pr_LABEL_FONT,
+                    labelpad=8,
+                )
+
+                # Put the muscle name inside the plot
+                _axes[i + 1].text(
+                    0.01,
+                    0.85,
+                    _label,
+                    transform=_axes[i + 1].transAxes,
+                    ha="left",
+                    va="top",
+                    fontsize=_pr_TICK_FONT,
+                    bbox=dict(
+                        facecolor="white",
+                        edgecolor="none",
+                        alpha=0.75,
+                        pad=2,
+                    ),
+                )
+
+                _axes[i + 1].axvline(
+                    x=0,
+                    color="gray",
+                    linestyle="--",
+                    alpha=0.5,
+                )
+
+            # ============================================================
+            # Shared formatting
+            # ============================================================
+            _axes[-1].set_xlabel("Time (s)", fontsize=_pr_LABEL_FONT)
+
             for _ax in _axes:
                 _ax.set_xlim(_pr_TIME_MIN, _pr_TIME_MAX)
+                _ax.tick_params(axis="both", labelsize=_pr_TICK_FONT)
 
             plt.tight_layout()
+
+            # Optional: save a print-ready PDF
+            # Uncomment this if you want the file saved automatically.
+            #
+            # pr_fig.savefig(
+            #     "per_run_viewer_plot_letter.pdf",
+            #     format="pdf",
+            #     bbox_inches="tight",
+            # )
 
     pr_fig
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(emg_df, pl):
     emg_sampling_check = (
         emg_df
@@ -2159,6 +2323,223 @@ def _(emg_df, pl):
     )
 
     emg_sampling_check
+    return
+
+
+@app.cell
+def _(emg_df, fnirs_df, pl, plt, prepare_emg_for_analysis):
+    def _():
+        # Combined fNIRS + EMG Aggregated: Robot vs No-Robot
+        # 4 x 1 vertical layout with hard-coded filtering/baselining and font sizes
+
+        fnirs_TIME_MIN = -5.0
+        fnirs_TIME_MAX = 15.0
+        fnirs_UM_CONVERSION = 1e6
+
+        emg_TIME_MIN = -5.0
+        emg_TIME_MAX = 15.0
+
+        # Hard-coded processing choices
+        APPLY_FNIRS_BASELINE = True
+        APPLY_EMG_FILTER = True
+        APPLY_EMG_BASELINE = True
+
+        # Font sizes
+        TITLE_SIZE = 30
+        LABEL_SIZE = 28
+        TICK_SIZE = 26
+        LEGEND_SIZE = 26
+        SUPTITLE_SIZE = 32
+
+        # -----------------------------
+        # fNIRS processing
+        # -----------------------------
+        fnirs_filtered = fnirs_df.filter(
+            (pl.col("time_sec") >= fnirs_TIME_MIN)
+            & (pl.col("time_sec") <= fnirs_TIME_MAX)
+        )
+
+        fnirs_hbo_cols = [c for c in fnirs_df.columns if c.endswith("_hbo")]
+        fnirs_hbr_cols = [c for c in fnirs_df.columns if c.endswith("_hbr")]
+
+        fnirs_run_avg = fnirs_filtered.with_columns(
+            [
+                pl.mean_horizontal(fnirs_hbo_cols).alias("hbo_mean"),
+                pl.mean_horizontal(fnirs_hbr_cols).alias("hbr_mean"),
+            ]
+        )
+
+        if APPLY_FNIRS_BASELINE:
+            for _col in ["hbo_mean", "hbr_mean"]:
+                _bl = (
+                    fnirs_run_avg.filter(pl.col("time_sec") < 0)
+                    .group_by(["run_id", "task_instance"])
+                    .agg(pl.col(_col).mean().alias("_base"))
+                )
+
+                fnirs_run_avg = (
+                    fnirs_run_avg.join(_bl, on=["run_id", "task_instance"], how="left")
+                    .with_columns((pl.col(_col) - pl.col("_base")).alias(_col))
+                    .drop("_base")
+                )
+
+        fnirs_avg = (
+            fnirs_run_avg.group_by("time_sec", "is_robot")
+            .agg(
+                [
+                    pl.col("hbo_mean").mean().alias("hbo"),
+                    pl.col("hbr_mean").mean().alias("hbr"),
+                ]
+            )
+            .sort("time_sec")
+            .with_columns(
+                [
+                    (pl.col("hbo") * fnirs_UM_CONVERSION).alias("hbo"),
+                    (pl.col("hbr") * fnirs_UM_CONVERSION).alias("hbr"),
+                ]
+            )
+        )
+
+        fnirs_robot = fnirs_avg.filter(pl.col("is_robot") == True)
+        fnirs_no_robot = fnirs_avg.filter(pl.col("is_robot") == False)
+
+        # -----------------------------
+        # EMG processing
+        # -----------------------------
+        _emg_src = prepare_emg_for_analysis(
+            emg_df,
+            apply_filter=APPLY_EMG_FILTER,
+            time_min=emg_TIME_MIN,
+            time_max=emg_TIME_MAX,
+        )
+
+        _emg_ylabel = "EMG RMS (mV)" if APPLY_EMG_FILTER else "EMG (mV)"
+
+        _emg_cols = [
+            c for c in _emg_src.columns
+            if "EMG" in c and c.endswith("(mV)")
+        ]
+
+        _emg_filtered = _emg_src.filter(
+            (pl.col("time_sec") >= emg_TIME_MIN)
+            & (pl.col("time_sec") <= emg_TIME_MAX)
+        )
+
+        _emg_run_avg = _emg_filtered.with_columns(
+            pl.mean_horizontal(_emg_cols).alias("emg_mean")
+        )
+
+        if APPLY_EMG_BASELINE:
+            for _col in _emg_cols:
+                _bl = (
+                    _emg_run_avg.filter(pl.col("time_sec") < 0)
+                    .group_by(["run_id", "task_instance"])
+                    .agg(pl.col(_col).mean().alias("_base"))
+                )
+
+                _emg_run_avg = (
+                    _emg_run_avg.join(_bl, on=["run_id", "task_instance"], how="left")
+                    .with_columns((pl.col(_col) - pl.col("_base")).alias(_col))
+                    .drop("_base")
+                )
+
+            _emg_run_avg = _emg_run_avg.with_columns(
+                pl.mean_horizontal(_emg_cols).alias("emg_mean")
+            )
+
+        _emg_avg = (
+            _emg_run_avg.group_by("time_sec", "is_robot")
+            .agg(pl.col("emg_mean").mean().alias("emg"))
+            .sort("time_sec")
+        )
+
+        _emg_robot = _emg_avg.filter(pl.col("is_robot") == True)
+        _emg_no_robot = _emg_avg.filter(pl.col("is_robot") == False)
+
+        # -----------------------------
+        # Combined vertical 4 x 1 plot
+        # -----------------------------
+        combined_fig, axes = plt.subplots(
+            4,
+            1,
+            figsize=(14, 20),
+            sharex=True
+        )
+
+        # fNIRS Robot
+        axes[0].plot(
+            fnirs_robot["time_sec"],
+            fnirs_robot["hbo"],
+            label="HbO",
+            color="red",
+        )
+        axes[0].plot(
+            fnirs_robot["time_sec"],
+            fnirs_robot["hbr"],
+            label="HbR",
+            color="blue",
+        )
+        axes[0].set_title("fNIRS Robot", fontsize=TITLE_SIZE)
+        axes[0].set_ylabel("Concentration (μM)", fontsize=LABEL_SIZE)
+        axes[0].axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+        axes[0].legend(fontsize=LEGEND_SIZE)
+
+        # fNIRS No-Robot
+        axes[1].plot(
+            fnirs_no_robot["time_sec"],
+            fnirs_no_robot["hbo"],
+            label="HbO",
+            color="red",
+        )
+        axes[1].plot(
+            fnirs_no_robot["time_sec"],
+            fnirs_no_robot["hbr"],
+            label="HbR",
+            color="blue",
+        )
+        axes[1].set_title("fNIRS No-Robot", fontsize=TITLE_SIZE)
+        axes[1].set_ylabel("Concentration (μM)", fontsize=LABEL_SIZE)
+        axes[1].axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+        axes[1].legend(fontsize=LEGEND_SIZE)
+
+        # EMG Robot
+        axes[2].plot(
+            _emg_robot["time_sec"],
+            _emg_robot["emg"],
+            color="tab:blue",
+            linewidth=0.8,
+        )
+        axes[2].set_title("EMG Robot", fontsize=TITLE_SIZE)
+        axes[2].set_ylabel(_emg_ylabel, fontsize=LABEL_SIZE)
+        axes[2].axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+
+        # EMG No-Robot
+        axes[3].plot(
+            _emg_no_robot["time_sec"],
+            _emg_no_robot["emg"],
+            color="tab:orange",
+            linewidth=0.8,
+        )
+        axes[3].set_title("EMG No-Robot", fontsize=TITLE_SIZE)
+        axes[3].set_xlabel("Time (s)", fontsize=LABEL_SIZE)
+        axes[3].set_ylabel(_emg_ylabel, fontsize=LABEL_SIZE)
+        axes[3].axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+
+        # Tick label sizes for all axes
+        for ax in axes:
+            ax.tick_params(axis="both", labelsize=TICK_SIZE)
+
+        # combined_fig.suptitle(
+        #     "Aggregated fNIRS and EMG: Robot vs No-Robot",
+        #     fontsize=SUPTITLE_SIZE,
+        #     y=1.01,
+        # )
+
+        plt.tight_layout()
+        return combined_fig
+
+
+    _()
     return
 
 
