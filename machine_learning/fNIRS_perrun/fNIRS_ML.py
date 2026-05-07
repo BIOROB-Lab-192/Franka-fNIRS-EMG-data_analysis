@@ -588,9 +588,11 @@ def binary_metrics(labels, preds, probs=None):
 
 def plot_confusion_matrix(all_labels, all_preds, save_path, title):
     cm = confusion_matrix(all_labels, all_preds, labels=[0, 1])
+
     fig, ax = plt.subplots(figsize=(6, 5))
     im = ax.imshow(cm, interpolation="nearest", cmap=plt.cm.Blues)
     ax.figure.colorbar(im, ax=ax)
+
     ax.set(
         xticks=[0, 1],
         yticks=[0, 1],
@@ -601,16 +603,26 @@ def plot_confusion_matrix(all_labels, all_preds, save_path, title):
         title=title,
     )
 
-    thresh = cm.max() / 2 if cm.max() > 0 else 0
+    # Choose text color based on actual cell color brightness
+    cmap = im.cmap
+    norm = im.norm
+
     for i in range(2):
         for j in range(2):
+            rgba = cmap(norm(cm[i, j]))
+            r, g, b, _ = rgba
+
+            # Perceived brightness; lower = darker background
+            brightness = 0.299 * r + 0.587 * g + 0.114 * b
+            text_color = "white" if brightness < 0.45 else "black"
+
             ax.text(
                 j,
                 i,
                 format(cm[i, j], "d"),
                 ha="center",
                 va="center",
-                color="white" if cm[i, j] > thresh else "black",
+                color=text_color,
                 fontsize=16,
                 fontweight="bold",
             )
