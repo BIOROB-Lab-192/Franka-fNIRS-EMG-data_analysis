@@ -28,29 +28,27 @@ Important:
 
 import csv
 import json
-from pathlib import Path
 from datetime import datetime
-
-import polars as pl
-import numpy as np
-import torch
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
+from pathlib import Path
 
 import matplotlib
+import numpy as np
+import polars as pl
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, Dataset
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-
 from sklearn.metrics import (
-    confusion_matrix,
     accuracy_score,
+    auc,
+    confusion_matrix,
+    f1_score,
     precision_score,
     recall_score,
-    f1_score,
     roc_curve,
-    auc,
 )
-
 
 # ──────────────────────────── CONFIG ────────────────────────────
 
@@ -90,6 +88,7 @@ EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ──────────────────────────── DATA ────────────────────────────
+
 
 def load_and_prepare():
     df = pl.read_parquet(DATA_PATH)
@@ -135,13 +134,17 @@ def load_and_prepare():
 def compute_downsample_factor(runs, target_len=TARGET_LEN_FOR_DOWNSAMPLE):
     first_run = list(runs.values())[0]
     inst = first_run["df"]["task_instance"].unique()[0]
-    sample_df = first_run["df"].filter(pl.col("task_instance") == inst).sort("sample_idx")
+    sample_df = (
+        first_run["df"].filter(pl.col("task_instance") == inst).sort("sample_idx")
+    )
     raw_len = sample_df.select(EMG_COLUMNS).to_numpy().shape[0]
 
     factor = max(1, raw_len // target_len)
     actual_len = raw_len // factor
 
-    print(f"  Data: {raw_len} samples -> downsample {factor}x -> {actual_len} timesteps")
+    print(
+        f"  Data: {raw_len} samples -> downsample {factor}x -> {actual_len} timesteps"
+    )
     return factor, actual_len
 
 
@@ -273,6 +276,7 @@ def build_all_run_data(runs, downsample_factor, target_len):
 
 # ──────────────────────────── MODEL ────────────────────────────
 
+
 class EMGClassifier1D(nn.Module):
     def __init__(
         self,
@@ -288,17 +292,14 @@ class EMGClassifier1D(nn.Module):
             nn.GroupNorm(2, 8),
             nn.ReLU(),
             nn.MaxPool1d(2),
-
             nn.Conv1d(8, 16, kernel_size=7, stride=2, padding=3),
             nn.GroupNorm(4, 16),
             nn.ReLU(),
             nn.Dropout1d(conv_drop),
             nn.MaxPool1d(2),
-
             nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2),
             nn.GroupNorm(4, 32),
             nn.ReLU(),
-
             nn.AdaptiveAvgPool1d(1),
         )
 
@@ -312,7 +313,10 @@ class EMGClassifier1D(nn.Module):
 
     def forward(self, x):
         return self.classifier(self.features(x))
+
+
 # ──────────────────────────── TRAINING / EVALUATION ────────────────────────────
+
 
 def train_fixed_epochs(model, train_loader, num_epochs=NUM_EPOCHS):
     """Train for a fixed number of epochs using a fixed LR schedule.
@@ -415,7 +419,9 @@ def binary_metrics(labels, preds, probs=None):
         "precision_robot": precision_score(labels, preds, pos_label=1, zero_division=0),
         "recall_robot": recall_score(labels, preds, pos_label=1, zero_division=0),
         "f1_robot": f1_score(labels, preds, pos_label=1, zero_division=0),
-        "precision_norobot": precision_score(labels, preds, pos_label=0, zero_division=0),
+        "precision_norobot": precision_score(
+            labels, preds, pos_label=0, zero_division=0
+        ),
         "recall_norobot": recall_score(labels, preds, pos_label=0, zero_division=0),
         "f1_norobot": f1_score(labels, preds, pos_label=0, zero_division=0),
     }
@@ -428,6 +434,7 @@ def binary_metrics(labels, preds, probs=None):
 
 
 # ──────────────────────────── PLOTS ────────────────────────────
+
 
 def plot_confusion_matrix(all_labels, all_preds, save_path, title):
     cm = confusion_matrix(all_labels, all_preds, labels=[0, 1])
@@ -532,6 +539,7 @@ def plot_training_curves(all_histories, save_path):
 
 # ──────────────────────────── MAIN ────────────────────────────
 
+
 def main():
     print("=" * 70)
     print("EMG 1D CNN — LOOCV Evaluation + Final Production Training")
@@ -580,7 +588,9 @@ def main():
         model, history = train_fixed_epochs(model, train_loader, num_epochs=NUM_EPOCHS)
         result = evaluate_model(model, test_loader)
 
-        fold_metrics = binary_metrics(result["labels"], result["preds"], result["probs"])
+        fold_metrics = binary_metrics(
+            result["labels"], result["preds"], result["probs"]
+        )
         all_fold_metrics.append(fold_metrics)
         fold_accuracies.append(fold_metrics["accuracy"])
         fold_names.append(held_out)
@@ -592,16 +602,18 @@ def main():
 
         # Per-window predictions.
         for w in range(len(result["labels"])):
-            per_window_rows.append({
-                "fold": fold_idx + 1,
-                "held_out_run": held_out,
-                "task_instance": test_instances[w],
-                "true_label": int(result["labels"][w]),
-                "pred_label": int(result["preds"][w]),
-                "prob_norobot": float(result["probs"][w][0]),
-                "prob_robot": float(result["probs"][w][1]),
-                "correct": int(result["labels"][w]) == int(result["preds"][w]),
-            })
+            per_window_rows.append(
+                {
+                    "fold": fold_idx + 1,
+                    "held_out_run": held_out,
+                    "task_instance": test_instances[w],
+                    "true_label": int(result["labels"][w]),
+                    "pred_label": int(result["preds"][w]),
+                    "prob_norobot": float(result["probs"][w][0]),
+                    "prob_robot": float(result["probs"][w][1]),
+                    "correct": int(result["labels"][w]) == int(result["preds"][w]),
+                }
+            )
 
         # Run-level prediction by averaging window probabilities within the held-out run.
         run_true = int(result["labels"][0])
@@ -611,36 +623,36 @@ def main():
 
         robot_probs = result["probs"][:, 1]
         window_preds = result["preds"]
-        
+
         run_prob_robot_mean = float(robot_probs.mean())
         run_prob_robot_median = float(np.median(robot_probs))
-        
+
         run_pred_mean_prob = int(run_prob_robot_mean >= 0.5)
         run_pred_median_prob = int(run_prob_robot_median >= 0.5)
         run_pred_majority = int(window_preds.mean() >= 0.5)
 
-        per_run_rows.append({
-            "fold": fold_idx + 1,
-            "held_out_run": held_out,
-            "true_label": run_true,
-        
-            "pred_label_mean_prob": run_pred_mean_prob,
-            "pred_label_median_prob": run_pred_median_prob,
-            "pred_label_majority": run_pred_majority,
-        
-            "prob_robot_mean": run_prob_robot_mean,
-            "prob_robot_median": run_prob_robot_median,
-            "prob_robot_std": float(robot_probs.std(ddof=1)) if len(robot_probs) > 1 else 0.0,
-            "prob_robot_min": float(robot_probs.min()),
-            "prob_robot_max": float(robot_probs.max()),
-        
-            "n_windows": len(result["labels"]),
-            "window_accuracy": float(fold_metrics["accuracy"]),
-        
-            "correct_mean_prob": run_true == run_pred_mean_prob,
-            "correct_median_prob": run_true == run_pred_median_prob,
-            "correct_majority": run_true == run_pred_majority,
-        })
+        per_run_rows.append(
+            {
+                "fold": fold_idx + 1,
+                "held_out_run": held_out,
+                "true_label": run_true,
+                "pred_label_mean_prob": run_pred_mean_prob,
+                "pred_label_median_prob": run_pred_median_prob,
+                "pred_label_majority": run_pred_majority,
+                "prob_robot_mean": run_prob_robot_mean,
+                "prob_robot_median": run_prob_robot_median,
+                "prob_robot_std": float(robot_probs.std(ddof=1))
+                if len(robot_probs) > 1
+                else 0.0,
+                "prob_robot_min": float(robot_probs.min()),
+                "prob_robot_max": float(robot_probs.max()),
+                "n_windows": len(result["labels"]),
+                "window_accuracy": float(fold_metrics["accuracy"]),
+                "correct_mean_prob": run_true == run_pred_mean_prob,
+                "correct_median_prob": run_true == run_pred_median_prob,
+                "correct_majority": run_true == run_pred_majority,
+            }
+        )
 
         print(
             f"  Window accuracy: {fold_metrics['accuracy']:.3f} | "
@@ -663,11 +675,10 @@ def main():
     # Aggregate out-of-fold run-level metrics.
     run_labels = np.array([r["true_label"] for r in per_run_rows])
     run_preds = np.array([r["pred_label_mean_prob"] for r in per_run_rows])
-    run_probs = np.array([
-        [1.0 - r["prob_robot_mean"], r["prob_robot_mean"]]
-        for r in per_run_rows
-    ])
-    
+    run_probs = np.array(
+        [[1.0 - r["prob_robot_mean"], r["prob_robot_mean"]] for r in per_run_rows]
+    )
+
     aggregate_run = binary_metrics(run_labels, run_preds, run_probs)
 
     print(f"\n{'=' * 70}")
@@ -743,12 +754,24 @@ def main():
         "fold",
         "held_out_run",
         "true_label",
+        # Original/default aggregation: mean probability
         "pred_label",
         "prob_norobot_mean",
         "prob_robot_mean",
+        "correct",
+        # Alternative aggregation diagnostics
+        "pred_label_mean_prob",
+        "pred_label_median_prob",
+        "pred_label_majority",
+        "prob_robot_median",
+        "prob_robot_std",
+        "prob_robot_min",
+        "prob_robot_max",
+        "correct_mean_prob",
+        "correct_median_prob",
+        "correct_majority",
         "n_windows",
         "window_accuracy",
-        "correct",
     ]
     with open(pr_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=pr_fields)
@@ -828,7 +851,9 @@ def main():
         "num_epochs": NUM_EPOCHS,
         "device": DEVICE,
         "run_ids_used_for_final_training": run_ids,
-        "loocv_window_metrics": {k: round(float(v), 4) for k, v in aggregate_window.items()},
+        "loocv_window_metrics": {
+            k: round(float(v), 4) for k, v in aggregate_window.items()
+        },
         "loocv_run_metrics": {k: round(float(v), 4) for k, v in aggregate_run.items()},
     }
 
