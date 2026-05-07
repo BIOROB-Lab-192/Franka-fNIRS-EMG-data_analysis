@@ -278,59 +278,66 @@ class EMGClassifier1D(nn.Module):
         self,
         n_channels=N_CHANNELS,
         n_classes=N_CLASSES,
-        classifier_drop=CLASSIFIER_DROP,
-        conv_drop=CONV_DROP,
+        classifier_drop=0.2,
+        conv_drop=0.1,
     ):
         super().__init__()
+
         self.features = nn.Sequential(
-            nn.Conv1d(n_channels, 32, kernel_size=7, stride=2, padding=3),
-            nn.BatchNorm1d(32),
+            nn.Conv1d(n_channels, 8, kernel_size=9, stride=2, padding=4),
+            nn.GroupNorm(2, 8),
+            nn.ReLU(),
+            nn.MaxPool1d(2),
+
+            nn.Conv1d(8, 16, kernel_size=7, stride=2, padding=3),
+            nn.GroupNorm(4, 16),
             nn.ReLU(),
             nn.Dropout1d(conv_drop),
             nn.MaxPool1d(2),
 
-            nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2),
-            nn.BatchNorm1d(64),
+            nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2),
+            nn.GroupNorm(4, 32),
             nn.ReLU(),
-            nn.Dropout1d(conv_drop),
-            nn.MaxPool1d(2),
 
-            nn.Conv1d(64, 128, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm1d(128),
-            nn.ReLU(),
-            nn.Dropout1d(conv_drop),
-            nn.MaxPool1d(2),
-
-            nn.Conv1d(128, 256, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
             nn.AdaptiveAvgPool1d(1),
         )
+
         self.classifier = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(256, 64),
+            nn.Linear(32, 16),
             nn.ReLU(),
             nn.Dropout(classifier_drop),
-            nn.Linear(64, n_classes),
+            nn.Linear(16, n_classes),
         )
 
     def forward(self, x):
         return self.classifier(self.features(x))
-
-
 # ──────────────────────────── TRAINING / EVALUATION ────────────────────────────
 
 def train_fixed_epochs(model, train_loader, num_epochs=NUM_EPOCHS):
-    """Train without looking at the held-out test fold.
+    """Train for a fixed number of epochs using a fixed LR schedule.
 
-    This avoids test-fold leakage. If you want early stopping, use a separate
-    validation run selected only from the training runs, not the held-out run.
+    No validation or held-out fold performance is used for model selection.
+    The LR schedule is predetermined from num_epochs only.
     """
     model = model.to(DEVICE)
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=LR,
+        weight_decay=WEIGHT_DECAY,
+    )
 
-    history = {"train_loss": []}
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=num_epochs,
+        eta_min=LR * 0.01,
+    )
+
+    history = {
+        "train_loss": [],
+        "lr": [],
+    }
 
     for epoch in range(num_epochs):
         model.train()
@@ -338,18 +345,29 @@ def train_fixed_epochs(model, train_loader, num_epochs=NUM_EPOCHS):
 
         for X_batch, y_batch in train_loader:
             X_batch, y_batch = X_batch.to(DEVICE), y_batch.to(DEVICE)
+
             optimizer.zero_grad()
             outputs = model(X_batch)
             loss = criterion(outputs, y_batch)
             loss.backward()
             optimizer.step()
+
             train_loss += loss.item() * X_batch.size(0)
 
+        scheduler.step()
+
         train_loss /= len(train_loader.dataset)
+        current_lr = optimizer.param_groups[0]["lr"]
+
         history["train_loss"].append(train_loss)
+        history["lr"].append(current_lr)
 
         if (epoch + 1) % 10 == 0 or epoch == 0:
-            print(f"    Epoch {epoch + 1:3d} | train_loss={train_loss:.4f}")
+            print(
+                f"    Epoch {epoch + 1:3d} | "
+                f"train_loss={train_loss:.4f} | "
+                f"lr={current_lr:.6g}"
+            )
 
     model.cpu()
     return model, history
@@ -591,16 +609,37 @@ def main():
         run_prob_norobot = 1.0 - run_prob_robot
         run_pred = int(run_prob_robot >= 0.5)
 
+        robot_probs = result["probs"][:, 1]
+        window_preds = result["preds"]
+        
+        run_prob_robot_mean = float(robot_probs.mean())
+        run_prob_robot_median = float(np.median(robot_probs))
+        
+        run_pred_mean_prob = int(run_prob_robot_mean >= 0.5)
+        run_pred_median_prob = int(run_prob_robot_median >= 0.5)
+        run_pred_majority = int(window_preds.mean() >= 0.5)
+
         per_run_rows.append({
             "fold": fold_idx + 1,
             "held_out_run": held_out,
             "true_label": run_true,
-            "pred_label": run_pred,
-            "prob_norobot_mean": run_prob_norobot,
-            "prob_robot_mean": run_prob_robot,
+        
+            "pred_label_mean_prob": run_pred_mean_prob,
+            "pred_label_median_prob": run_pred_median_prob,
+            "pred_label_majority": run_pred_majority,
+        
+            "prob_robot_mean": run_prob_robot_mean,
+            "prob_robot_median": run_prob_robot_median,
+            "prob_robot_std": float(robot_probs.std(ddof=1)) if len(robot_probs) > 1 else 0.0,
+            "prob_robot_min": float(robot_probs.min()),
+            "prob_robot_max": float(robot_probs.max()),
+        
             "n_windows": len(result["labels"]),
             "window_accuracy": float(fold_metrics["accuracy"]),
-            "correct": run_true == run_pred,
+        
+            "correct_mean_prob": run_true == run_pred_mean_prob,
+            "correct_median_prob": run_true == run_pred_median_prob,
+            "correct_majority": run_true == run_pred_majority,
         })
 
         print(
@@ -623,8 +662,12 @@ def main():
 
     # Aggregate out-of-fold run-level metrics.
     run_labels = np.array([r["true_label"] for r in per_run_rows])
-    run_preds = np.array([r["pred_label"] for r in per_run_rows])
-    run_probs = np.array([[r["prob_norobot_mean"], r["prob_robot_mean"]] for r in per_run_rows])
+    run_preds = np.array([r["pred_label_mean_prob"] for r in per_run_rows])
+    run_probs = np.array([
+        [1.0 - r["prob_robot_mean"], r["prob_robot_mean"]]
+        for r in per_run_rows
+    ])
+    
     aggregate_run = binary_metrics(run_labels, run_preds, run_probs)
 
     print(f"\n{'=' * 70}")
