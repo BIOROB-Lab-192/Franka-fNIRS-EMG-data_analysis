@@ -276,14 +276,32 @@ def _(filter_rms, np, pl):
 
 @app.cell(hide_code=True)
 def fnirs_baseline_switch(mo):
-    # ─── fNIRS Plots ───────────────────────────────────────────
-    fnirs_baseline_switch = mo.ui.switch(label="Baseline correction (-5 to 0s)")
-    fnirs_baseline_switch
-    return (fnirs_baseline_switch,)
+    # --- fNIRS Plots ---
+    fnirs_ov_baseline_switch = mo.ui.switch(label="Baseline correction (-5 to 0s)")
+    fnirs_ch_baseline_switch = mo.ui.switch(label="Baseline correction (-5 to 0s)")
+    fnirs_task_baseline_switch = mo.ui.switch(
+        label="Baseline correction (-5 to 0s)"
+    )
+    mo.md("**fNIRS section**")
+    mo.vstack(
+        [
+            mo.md("Aggregated (Robot vs No-Robot):"),
+            fnirs_ov_baseline_switch,
+            mo.md("Per-Channel:"),
+            fnirs_ch_baseline_switch,
+            mo.md("Per-Task:"),
+            fnirs_task_baseline_switch,
+        ]
+    )
+    return (
+        fnirs_ch_baseline_switch,
+        fnirs_ov_baseline_switch,
+        fnirs_task_baseline_switch,
+    )
 
 
 @app.cell(hide_code=True)
-def _(fnirs_baseline_switch, fnirs_df, pl, plt):
+def _(fnirs_df, fnirs_ov_baseline_switch, pl, plt):
     # fNIRS Aggregated: Robot vs No-Robot (Global Channel Average)
     # Reuses: fnirs_df, pl, plt, np from existing cells
 
@@ -310,7 +328,7 @@ def _(fnirs_baseline_switch, fnirs_df, pl, plt):
     )
 
     # Baseline correction
-    if fnirs_baseline_switch.value:
+    if fnirs_ov_baseline_switch.value:
         for _col in ["hbo_mean", "hbr_mean"]:
             _bl = (
                 fnirs_run_avg.filter(pl.col("time_sec") < 0)
@@ -383,7 +401,7 @@ def _(fnirs_baseline_switch, fnirs_df, pl, plt):
 
 
 @app.cell(hide_code=True)
-def _(fnirs_baseline_switch, fnirs_df, mo, pl):
+def _(fnirs_df, fnirs_ov_baseline_switch, mo, pl):
     # fNIRS Overall Summary Stats
     # True condition-level result:
     # collect all epochs for each condition and average them together
@@ -408,7 +426,7 @@ def _(fnirs_baseline_switch, fnirs_df, mo, pl):
         ]
     )
 
-    if fnirs_baseline_switch.value:
+    if fnirs_ov_baseline_switch.value:
         for _col in ["hbo_mean", "hbr_mean"]:
             _bl = (
                 _fnirs_ov_epoch.filter(pl.col("time_sec") < 0)
@@ -416,7 +434,9 @@ def _(fnirs_baseline_switch, fnirs_df, mo, pl):
                 .agg(pl.col(_col).mean().alias("_base"))
             )
             _fnirs_ov_epoch = (
-                _fnirs_ov_epoch.join(_bl, on=["run_id", "task_instance"], how="left")
+                _fnirs_ov_epoch.join(
+                    _bl, on=["run_id", "task_instance"], how="left"
+                )
                 .with_columns((pl.col(_col) - pl.col("_base")).alias(_col))
                 .drop("_base")
             )
@@ -424,8 +444,7 @@ def _(fnirs_baseline_switch, fnirs_df, mo, pl):
     # Condition-level average curves:
     # all epochs in each condition averaged together at each time_sec
     _fnirs_ov_condition_curve = (
-        _fnirs_ov_epoch
-        .group_by(["is_robot", "time_sec"])
+        _fnirs_ov_epoch.group_by(["is_robot", "time_sec"])
         .agg(
             [
                 pl.col("hbo_mean").mean().alias("hbo"),
@@ -442,9 +461,11 @@ def _(fnirs_baseline_switch, fnirs_df, mo, pl):
 
         # If run_id + task_instance defines an epoch, use this.
         # If fNIRS only has one row per run_id/task, this is still safer than run_id alone.
-        _epochs = _epoch_df.select(["run_id", "task_instance"]).unique().height \
-            if "task_instance" in _epoch_df.columns \
+        _epochs = (
+            _epoch_df.select(["run_id", "task_instance"]).unique().height
+            if "task_instance" in _epoch_df.columns
             else _epoch_df["run_id"].n_unique()
+        )
 
         _participants = _epoch_df["participant"].n_unique()
         _tasks = _epoch_df["task"].n_unique()
@@ -453,14 +474,12 @@ def _(fnirs_baseline_switch, fnirs_df, mo, pl):
 
         # Post-stimulus condition-level curve: 0–15s
         _post = _curve.filter(
-            (pl.col("time_sec") >= 0)
-            & (pl.col("time_sec") <= 15.0)
+            (pl.col("time_sec") >= 0) & (pl.col("time_sec") <= 15.0)
         )
 
         # Baseline condition-level curve: -5–0s
         _baseline = _curve.filter(
-            (pl.col("time_sec") >= -5.0)
-            & (pl.col("time_sec") < 0)
+            (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") < 0)
         )
 
         # Convert to μM after computing values
@@ -537,7 +556,7 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(
-    fnirs_baseline_switch,
+    fnirs_ch_baseline_switch,
     fnirs_channel_options,
     fnirs_channel_selector,
     fnirs_df,
@@ -556,7 +575,7 @@ def _(
     ]
 
     # Baseline correction (matching graph logic)
-    if fnirs_baseline_switch.value and _fnirs_ch_selected:
+    if fnirs_ch_baseline_switch.value and _fnirs_ch_selected:
         for _col in _fnirs_ch_selected:
             _bl = (
                 _fnirs_ch_statsFiltered.filter(pl.col("time_sec") < 0)
@@ -564,7 +583,9 @@ def _(
                 .agg(pl.col(_col).mean().alias("_base"))
             )
             _fnirs_ch_statsFiltered = (
-                _fnirs_ch_statsFiltered.join(_bl, on=["run_id", "task_instance"], how="left")
+                _fnirs_ch_statsFiltered.join(
+                    _bl, on=["run_id", "task_instance"], how="left"
+                )
                 .with_columns((pl.col(_col) - pl.col("_base")).alias(_col))
                 .drop("_base")
             )
@@ -604,7 +625,7 @@ def _(
     )
     _fnirs_ch_tbl += "\n".join(_fnirs_ch_lines)
 
-    _fn = " with baseline correction" if fnirs_baseline_switch.value else ""
+    _fn = " with baseline correction" if fnirs_ch_baseline_switch.value else ""
 
     mo.md(f"""
     ### fNIRS Per-Channel Summary{_fn}
@@ -620,7 +641,7 @@ def _(
 def _(
     Line2D,
     build_legend,
-    fnirs_baseline_switch,
+    fnirs_ch_baseline_switch,
     fnirs_channel_options,
     fnirs_channel_selector,
     fnirs_df,
@@ -647,7 +668,7 @@ def _(
     ]
 
     # Baseline correction
-    if fnirs_baseline_switch.value:
+    if fnirs_ch_baseline_switch.value:
         for _col in fnirs_ch_selected:
             _bl = (
                 fnirs_ch_filtered.filter(pl.col("time_sec") < 0)
@@ -655,7 +676,9 @@ def _(
                 .agg(pl.col(_col).mean().alias("_base"))
             )
             fnirs_ch_filtered = (
-                fnirs_ch_filtered.join(_bl, on=["run_id", "task_instance"], how="left")
+                fnirs_ch_filtered.join(
+                    _bl, on=["run_id", "task_instance"], how="left"
+                )
                 .with_columns((pl.col(_col) - pl.col("_base")).alias(_col))
                 .drop("_base")
             )
@@ -768,7 +791,6 @@ def _(
         build_legend(fnirs_ch_fig, _legend_handles)
 
 
-
     fnirs_ch_fig
     return
 
@@ -790,7 +812,7 @@ def _(fnirs_df, mo):
 
 
 @app.cell(hide_code=True)
-def _(fnirs_baseline_switch, fnirs_df, fnirs_task_selector, mo, pl):
+def _(fnirs_df, fnirs_task_baseline_switch, fnirs_task_selector, mo, pl):
     # fNIRS Task Plot Summary Stats
     # Matches: fNIRS Per-Task Interactive Plot logic
 
@@ -819,7 +841,7 @@ def _(fnirs_baseline_switch, fnirs_df, fnirs_task_selector, mo, pl):
             )
 
             # Baseline correction (matching graph step 2)
-            if fnirs_baseline_switch.value:
+            if fnirs_task_baseline_switch.value:
                 for _col in ["hbo_mean", "hbr_mean"]:
                     _bl = (
                         _cdf_avg.filter(pl.col("time_sec") < 0)
@@ -827,7 +849,9 @@ def _(fnirs_baseline_switch, fnirs_df, fnirs_task_selector, mo, pl):
                         .agg(pl.col(_col).mean().alias("_base"))
                     )
                     _cdf_avg = (
-                        _cdf_avg.join(_bl, on=["run_id", "task_instance"], how="left")
+                        _cdf_avg.join(
+                            _bl, on=["run_id", "task_instance"], how="left"
+                        )
                         .with_columns((pl.col(_col) - pl.col("_base")).alias(_col))
                         .drop("_base")
                     )
@@ -858,8 +882,12 @@ def _(fnirs_baseline_switch, fnirs_df, fnirs_task_selector, mo, pl):
             _hbo_x = _post["hbo"].max() * 1e6 if _post.height > 0 else 0.0
             _hbr_m = _post["hbr"].mean() * 1e6 if _post.height > 0 else 0.0
             _hbr_x = _post["hbr"].max() * 1e6 if _post.height > 0 else 0.0
-            _hbo_bl = _baseline["hbo"].mean() * 1e6 if _baseline.height > 0 else 0.0
-            _hbr_bl = _baseline["hbr"].mean() * 1e6 if _baseline.height > 0 else 0.0
+            _hbo_bl = (
+                _baseline["hbo"].mean() * 1e6 if _baseline.height > 0 else 0.0
+            )
+            _hbr_bl = (
+                _baseline["hbr"].mean() * 1e6 if _baseline.height > 0 else 0.0
+            )
 
             _fnirs_task_lines.append(
                 f"| {_task} | {_lbl} | {_runs} | {_hbo_m:.3f} | {_hbo_x:.3f} | {_hbo_bl:.3f} | {_hbr_m:.3f} | {_hbr_x:.3f} | {_hbr_bl:.3f} |"
@@ -869,7 +897,7 @@ def _(fnirs_baseline_switch, fnirs_df, fnirs_task_selector, mo, pl):
     _fnirs_task_tbl += "|------|-----------|------|---------------|--------------|-------------------|---------------|--------------|-------------------|\n"
     _fnirs_task_tbl += "\n".join(_fnirs_task_lines)
 
-    _fn = " with baseline correction" if fnirs_baseline_switch.value else ""
+    _fn = " with baseline correction" if fnirs_task_baseline_switch.value else ""
 
     mo.md(f"""
     ### fNIRS Per-Task Summary{_fn}
@@ -886,8 +914,8 @@ def _(
     Line2D,
     apply_baseline,
     build_legend,
-    fnirs_baseline_switch,
     fnirs_df,
+    fnirs_task_baseline_switch,
     fnirs_task_selector,
     legend_layout,
     pl,
@@ -935,7 +963,7 @@ def _(
                 ]
             )
 
-            if fnirs_baseline_switch.value:
+            if fnirs_task_baseline_switch.value:
                 _task_run_avg = apply_baseline(
                     _task_run_avg, ["hbo_mean", "hbr_mean"]
                 )
@@ -1043,26 +1071,31 @@ def _(
         build_legend(fnirs_task_fig, _legend_handles)
 
 
-
     fnirs_task_fig
     return
 
 
 @app.cell(hide_code=True)
 def emg_baseline_switch(mo):
-    # ─── EMG Plots ─────────────────────────────────────────────
-    emg_baseline_switch = mo.ui.switch(label="Baseline correction (-5 to 0s)")
+    # --- EMG Plots ---
+    emg_ov_baseline_switch = mo.ui.switch(label="Baseline correction (-5 to 0s)")
     emg_ov_filter_switch = mo.ui.switch(
         label="Bandpass + RMS filter (20-450 Hz, 100 ms)"
     )
-    [emg_baseline_switch, emg_ov_filter_switch]
-    return emg_baseline_switch, emg_ov_filter_switch
+    mo.md("**EMG section**")
+    mo.vstack(
+        [
+            mo.md("Aggregated (Robot vs No-Robot):"),
+            mo.hstack([emg_ov_baseline_switch, emg_ov_filter_switch]),
+        ]
+    )
+    return emg_ov_baseline_switch, emg_ov_filter_switch
 
 
 @app.cell(hide_code=True)
 def _(
-    emg_baseline_switch,
     emg_df,
+    emg_ov_baseline_switch,
     emg_ov_filter_switch,
     pl,
     plt,
@@ -1096,7 +1129,7 @@ def _(
     )
 
     # Baseline correction
-    if emg_baseline_switch.value:
+    if emg_ov_baseline_switch.value:
         for _col in _emg_ov_cols:
             _bl = (
                 _emg_ov_run_avg.filter(pl.col("time_sec") < 0)
@@ -1104,7 +1137,9 @@ def _(
                 .agg(pl.col(_col).mean().alias("_base"))
             )
             _emg_ov_run_avg = (
-                _emg_ov_run_avg.join(_bl, on=["run_id", "task_instance"], how="left")
+                _emg_ov_run_avg.join(
+                    _bl, on=["run_id", "task_instance"], how="left"
+                )
                 .with_columns((pl.col(_col) - pl.col("_base")).alias(_col))
                 .drop("_base")
             )
@@ -1154,8 +1189,8 @@ def _(
 
 @app.cell(hide_code=True)
 def _(
-    emg_baseline_switch,
     emg_df,
+    emg_ov_baseline_switch,
     emg_ov_filter_switch,
     mo,
     pl,
@@ -1176,8 +1211,7 @@ def _(
     _emg_ov_TIME_MAX = 15.0
 
     _emg_ov_cols = [
-        c for c in _emg_src.columns
-        if "EMG" in c and c.endswith("(mV)")
+        c for c in _emg_src.columns if "EMG" in c and c.endswith("(mV)")
     ]
 
     _emg_ov_filtered = _emg_src.filter(
@@ -1191,21 +1225,19 @@ def _(
     )
 
     # Match graph baseline correction exactly
-    if emg_baseline_switch.value:
+    if emg_ov_baseline_switch.value:
         for _col in _emg_ov_cols:
             _bl = (
-                _emg_ov_run_avg
-                .filter(pl.col("time_sec") < 0)
+                _emg_ov_run_avg.filter(pl.col("time_sec") < 0)
                 .group_by(["run_id", "task_instance"])
                 .agg(pl.col(_col).mean().alias("_base"))
             )
 
             _emg_ov_run_avg = (
-                _emg_ov_run_avg
-                .join(_bl, on=["run_id", "task_instance"], how="left")
-                .with_columns(
-                    (pl.col(_col) - pl.col("_base")).alias(_col)
+                _emg_ov_run_avg.join(
+                    _bl, on=["run_id", "task_instance"], how="left"
                 )
+                .with_columns((pl.col(_col) - pl.col("_base")).alias(_col))
                 .drop("_base")
             )
 
@@ -1215,8 +1247,7 @@ def _(
 
     # This is the exact condition-level curve used in the graph
     _emg_ov_avg = (
-        _emg_ov_run_avg
-        .group_by("time_sec", "is_robot")
+        _emg_ov_run_avg.group_by("time_sec", "is_robot")
         .agg(pl.col("emg_mean").mean().alias("emg"))
         .sort("time_sec")
     )
@@ -1235,14 +1266,12 @@ def _(
 
         # Post-stimulus graph values: 0–15s
         _curve_post = _curve.filter(
-            (pl.col("time_sec") >= 0)
-            & (pl.col("time_sec") <= 15.0)
+            (pl.col("time_sec") >= 0) & (pl.col("time_sec") <= 15.0)
         )
 
         # Baseline graph values: -5–0s
         _curve_bl = _curve.filter(
-            (pl.col("time_sec") >= -5.0)
-            & (pl.col("time_sec") < 0)
+            (pl.col("time_sec") >= -5.0) & (pl.col("time_sec") < 0)
         )
 
         # These now match what the graph visually shows
@@ -1266,7 +1295,11 @@ def _(
     _emg_ov_tbl += "\n".join(_emg_ov_lines)
 
     _fn = " (bandpass + RMS)" if emg_ov_filter_switch.value else ""
-    _bl_note = " with per-epoch baseline correction" if emg_baseline_switch.value else ""
+    _bl_note = (
+        " with per-epoch baseline correction"
+        if emg_ov_baseline_switch.value
+        else ""
+    )
 
     mo.md(f"""
     ### EMG Overall Summary{_fn}
@@ -1306,17 +1339,23 @@ def _(emg_df, mo):
         value=list(emg_sensor_options.keys()),
         label="Select EMG sensors",
     )
+    emg_sens_baseline_switch = mo.ui.switch(label="Baseline correction (-5 to 0s)")
     emg_sens_filter_switch = mo.ui.switch(
         label="Bandpass + RMS filter (20-450 Hz, 100 ms)"
     )
-    [emg_sensor_selector, emg_sens_filter_switch]
-    return emg_sens_filter_switch, emg_sensor_options, emg_sensor_selector
+    [emg_sensor_selector, emg_sens_baseline_switch, emg_sens_filter_switch]
+    return (
+        emg_sens_baseline_switch,
+        emg_sens_filter_switch,
+        emg_sensor_options,
+        emg_sensor_selector,
+    )
 
 
 @app.cell(hide_code=True)
 def _(
-    emg_baseline_switch,
     emg_df,
+    emg_sens_baseline_switch,
     emg_sens_filter_switch,
     emg_sensor_options,
     emg_sensor_selector,
@@ -1342,7 +1381,7 @@ def _(
     _emg_ss_selected = [
         emg_sensor_options[_ch] for _ch in emg_sensor_selector.value
     ]
-    if emg_baseline_switch.value and _emg_ss_selected:
+    if emg_sens_baseline_switch.value and _emg_ss_selected:
         for _col in _emg_ss_selected:
             _bl = (
                 _emg_ss_sf.filter(pl.col("time_sec") < 0)
@@ -1386,7 +1425,7 @@ def _(
     _emg_ss_tbl += "\n".join(_emg_ss_lines)
 
     _fn = " (bandpass + RMS)" if emg_sens_filter_switch.value else ""
-    _bl = " with baseline correction" if emg_baseline_switch.value else ""
+    _bl = " with baseline correction" if emg_sens_baseline_switch.value else ""
 
     mo.md(f"""
     ### EMG Per-Sensor Summary{_fn}{_bl}
@@ -1402,8 +1441,8 @@ def _(
 def _(
     Line2D,
     build_legend,
-    emg_baseline_switch,
     emg_df,
+    emg_sens_baseline_switch,
     emg_sens_filter_switch,
     emg_sensor_options,
     emg_sensor_selector,
@@ -1436,7 +1475,7 @@ def _(
     ]
 
     # Baseline correction
-    if emg_baseline_switch.value:
+    if emg_sens_baseline_switch.value:
         for _col in _emg_sp_selected:
             _bl = (
                 _emg_sp_filtered.filter(pl.col("time_sec") < 0)
@@ -1444,7 +1483,9 @@ def _(
                 .agg(pl.col(_col).mean().alias("_base"))
             )
             _emg_sp_filtered = (
-                _emg_sp_filtered.join(_bl, on=["run_id", "task_instance"], how="left")
+                _emg_sp_filtered.join(
+                    _bl, on=["run_id", "task_instance"], how="left"
+                )
                 .with_columns((pl.col(_col) - pl.col("_base")).alias(_col))
                 .drop("_base")
             )
@@ -1518,7 +1559,6 @@ def _(
         build_legend(_emg_sp_fig, _legend_handles)
 
 
-
     _emg_sp_fig
     return
 
@@ -1535,17 +1575,18 @@ def _(emg_df, mo):
     emg_task_selector = mo.ui.multiselect(
         options=_emg_task_sorted, value=_emg_task_sorted, label="Select tasks"
     )
+    emg_task_baseline_switch = mo.ui.switch(label="Baseline correction (-5 to 0s)")
     emg_task_filter_switch = mo.ui.switch(
         label="Bandpass + RMS filter (20-450 Hz, 100 ms)"
     )
-    [emg_task_selector, emg_task_filter_switch]
-    return emg_task_filter_switch, emg_task_selector
+    [emg_task_selector, emg_task_baseline_switch, emg_task_filter_switch]
+    return emg_task_baseline_switch, emg_task_filter_switch, emg_task_selector
 
 
 @app.cell(hide_code=True)
 def _(
-    emg_baseline_switch,
     emg_df,
+    emg_task_baseline_switch,
     emg_task_filter_switch,
     emg_task_selector,
     mo,
@@ -1583,7 +1624,7 @@ def _(
             )
 
             # Baseline correction (matching graph step 2)
-            if emg_baseline_switch.value:
+            if emg_task_baseline_switch.value:
                 _bl = (
                     _cdf_avg.filter(pl.col("time_sec") < 0)
                     .group_by(["run_id", "task_instance"])
@@ -1591,7 +1632,9 @@ def _(
                 )
                 _cdf_avg = (
                     _cdf_avg.join(_bl, on=["run_id", "task_instance"], how="left")
-                    .with_columns((pl.col("emg_mean") - pl.col("_base")).alias("emg_mean"))
+                    .with_columns(
+                        (pl.col("emg_mean") - pl.col("_base")).alias("emg_mean")
+                    )
                     .drop("_base")
                 )
 
@@ -1624,7 +1667,7 @@ def _(
     _emg_ts_tbl += "\n".join(_emg_ts_lines)
 
     _fn = " (bandpass + RMS)" if emg_task_filter_switch.value else ""
-    _bl = " with baseline correction" if emg_baseline_switch.value else ""
+    _bl = " with baseline correction" if emg_task_baseline_switch.value else ""
 
     mo.md(f"""
     ### EMG Per-Task Summary{_fn}{_bl}
@@ -1641,8 +1684,8 @@ def _(
     Line2D,
     apply_baseline,
     build_legend,
-    emg_baseline_switch,
     emg_df,
+    emg_task_baseline_switch,
     emg_task_filter_switch,
     emg_task_selector,
     legend_layout,
@@ -1692,7 +1735,7 @@ def _(
             )
 
             # Baseline correction
-            if emg_baseline_switch.value:
+            if emg_task_baseline_switch.value:
                 _task_run_avg = apply_baseline(_task_run_avg, ["emg_mean"])
 
             _task_avg = (
@@ -1751,7 +1794,6 @@ def _(
         build_legend(_emg_tp_fig, _legend_handles)
 
 
-
     _emg_tp_fig
     return
 
@@ -1795,6 +1837,7 @@ def _(
     fnirs_df,
     mo,
     pl,
+    pr_baseline_switch,
     pr_filter_switch,
     pr_run_select,
     pr_task_select,
@@ -1808,21 +1851,21 @@ def _(
     if pr_run_select.value is None or pr_task_select.value is None:
         _lines.append("*Select a run and task to see summary statistics.*")
     else:
-        _cond = (
-            (pl.col("run_id") == pr_run_select.value)
-            & (pl.col("task") == pr_task_select.value)
+        _cond = (pl.col("run_id") == pr_run_select.value) & (
+            pl.col("task") == pr_task_select.value
         )
         _cond_post = _cond & (pl.col("time_sec") >= 0)
+        _cond_bl = _cond & (pl.col("time_sec") < 0)
 
         _r_fnirs = fnirs_df.filter(_cond)
 
         # Apply filter to EMG if toggle is on
         _emg_for_stats = prepare_emg_for_analysis(
-        emg_df,
-        apply_filter=pr_filter_switch.value,
-        time_min=-5.0,
-        time_max=15.0,
-    )
+            emg_df,
+            apply_filter=pr_filter_switch.value,
+            time_min=-5.0,
+            time_max=15.0,
+        )
         _r_emg = _emg_for_stats.filter(_cond)
         _r_emg_post = _emg_for_stats.filter(_cond_post)
 
@@ -1841,6 +1884,7 @@ def _(
             else (_r_emg["participant"][0] if _r_emg.height > 0 else "\u2014")
         )
 
+        _bl_label = " (baseline corrected)" if pr_baseline_switch.value else ""
         _lines.append(
             f"**{_participant}** \u2014 {pr_run_select.value} \u2014 {pr_task_select.value} \u2014"
         )
@@ -1854,21 +1898,41 @@ def _(
         _fnirs_n = 0
         _hbo_mean = _hbo_peak = _hbr_mean = _hbr_peak = 0.0
         if _r_fnirs_post.height > 0 and len(_pr_hbo_cols) > 0:
-            _hbo_vals = _r_fnirs_post.select(
+            _hbo_post = _r_fnirs_post.select(
                 pl.mean_horizontal(_pr_hbo_cols)
             ).drop_nulls()
-            _hbr_vals = _r_fnirs_post.select(
+            _hbr_post = _r_fnirs_post.select(
                 pl.mean_horizontal(_pr_hbr_cols)
             ).drop_nulls()
-            if len(_hbo_vals) > 0:
-                _hbo_mean = _hbo_vals.mean().item() * 1e6
-                _hbo_peak = _hbo_vals.max().item() * 1e6
-                _hbr_mean = _hbr_vals.mean().item() * 1e6
-                _hbr_peak = _hbr_vals.max().item() * 1e6
-                _fnirs_n = len(_hbo_vals)
+            if len(_hbo_post) > 0:
+                _fnirs_n = len(_hbo_post)
+                if pr_baseline_switch.value:
+                    _r_fnirs_bl = fnirs_df.filter(_cond_bl)
+                    if _r_fnirs_bl.height > 0 and len(_pr_hbo_cols) > 0:
+                        _hbo_bl_mean = (
+                            _r_fnirs_bl.select(pl.mean_horizontal(_pr_hbo_cols))
+                            .drop_nulls()
+                            .mean()
+                            .item()
+                        )
+                        _hbr_bl_mean = (
+                            _r_fnirs_bl.select(pl.mean_horizontal(_pr_hbr_cols))
+                            .drop_nulls()
+                            .mean()
+                            .item()
+                        )
+                    else:
+                        _hbo_bl_mean = 0.0
+                        _hbr_bl_mean = 0.0
+                    _hbo_post = _hbo_post - _hbo_bl_mean
+                    _hbr_post = _hbr_post - _hbr_bl_mean
+                _hbo_mean = _hbo_post.mean().item() * 1e6
+                _hbo_peak = _hbo_post.max().item() * 1e6
+                _hbr_mean = _hbr_post.mean().item() * 1e6
+                _hbr_peak = _hbr_post.max().item() * 1e6
 
         _lines.append(
-            f"**fNIRS** ({_fnirs_freq}{', ' + str(_fnirs_n) + ' post-stimulus samples' if _fnirs_n > 0 else ''})"
+            f"**fNIRS** ({_fnirs_freq}{', ' + str(_fnirs_n) + ' post-stimulus samples' if _fnirs_n > 0 else ''}){_bl_label}"
         )
         _lines.append("")
         _lines.append("| | Mean (uM) | Peak (uM) |")
@@ -1892,7 +1956,7 @@ def _(
 
         _fn = " (filtered)" if pr_filter_switch.value else ""
         _lines.append(
-            f"**EMG{_fn}** ({_emg_freq}{', ' + f'{_emg_n:,}' + ' post-stimulus samples' if _emg_n > 0 else ''})"
+            f"**EMG{_fn}** ({_emg_freq}{', ' + f'{_emg_n:,}' + ' post-stimulus samples' if _emg_n > 0 else ''}){_bl_label}"
         )
         _lines.append("")
         _lines.append("| Sensor | Mean (mV) | Peak (mV) |")
@@ -1905,8 +1969,14 @@ def _(
                     _parts[1].replace(" (mV)", "") if len(_parts) > 1 else _col
                 )
                 _lbl = f"{_sensor_name} {_emg_ch}"
-                _vals = _r_emg_post[_col].drop_nulls()
+                _vals = _r_emg_post.get_column(_col).drop_nulls()
                 if len(_vals) > 0:
+                    if pr_baseline_switch.value:
+                        _bl_vals = (
+                            _r_emg.filter(_cond_bl).get_column(_col).drop_nulls()
+                        )
+                        if len(_bl_vals) > 0:
+                            _vals = _vals - _bl_vals.mean()
                     _m = _vals.mean()
                     _p = _vals.max()
                     _lines.append(f"| {_lbl} | {_m:.4f} | {_p:.4f} |")
@@ -2169,6 +2239,7 @@ def _(fnirs_df, mo):
 
 @app.cell(hide_code=True)
 def _(
+    apr_baseline_switch,
     apr_filter_switch,
     apr_run_select,
     emg_df,
@@ -2187,6 +2258,7 @@ def _(
     else:
         _cond = pl.col("run_id") == apr_run_select.value
         _cond_post = _cond & (pl.col("time_sec") >= 0)
+        _cond_bl = _cond & (pl.col("time_sec") < 0)
 
         _apr_fnirs = fnirs_df.filter(_cond)
         _apr_emg_all = prepare_emg_for_analysis(
@@ -2200,6 +2272,7 @@ def _(
 
         _apr_n_tasks = _apr_fnirs["task"].n_unique()
 
+        _bl_label = " (baseline corrected)" if apr_baseline_switch.value else ""
         _lines.append(
             f"**{apr_run_select.value}** -- {_apr_n_tasks} tasks, mean across all tasks"
         )
@@ -2213,23 +2286,43 @@ def _(
         _fnirs_n = 0
         _hbo_mean = _hbo_peak = _hbr_mean = _hbr_peak = 0.0
         if _apr_fnirs_post.height > 0 and len(_apr_hbo_cols) > 0:
-            _hbo_vals = _apr_fnirs_post.select(
+            _hbo_post = _apr_fnirs_post.select(
                 pl.mean_horizontal(_apr_hbo_cols)
             ).drop_nulls()
-            _hbr_vals = _apr_fnirs_post.select(
+            _hbr_post = _apr_fnirs_post.select(
                 pl.mean_horizontal(_apr_hbr_cols)
             ).drop_nulls()
-            if len(_hbo_vals) > 0:
-                _hbo_mean = _hbo_vals.mean().item() * 1e6
-                _hbo_peak = _hbo_vals.max().item() * 1e6
-                _hbr_mean = _hbr_vals.mean().item() * 1e6
-                _hbr_peak = _hbr_vals.max().item() * 1e6
-                _fnirs_n = len(_hbo_vals)
+            if len(_hbo_post) > 0:
+                _fnirs_n = len(_hbo_post)
+                if apr_baseline_switch.value:
+                    _apr_fnirs_bl = fnirs_df.filter(_cond_bl)
+                    if _apr_fnirs_bl.height > 0 and len(_apr_hbo_cols) > 0:
+                        _hbo_bl_mean = (
+                            _apr_fnirs_bl.select(pl.mean_horizontal(_apr_hbo_cols))
+                            .drop_nulls()
+                            .mean()
+                            .item()
+                        )
+                        _hbr_bl_mean = (
+                            _apr_fnirs_bl.select(pl.mean_horizontal(_apr_hbr_cols))
+                            .drop_nulls()
+                            .mean()
+                            .item()
+                        )
+                    else:
+                        _hbo_bl_mean = 0.0
+                        _hbr_bl_mean = 0.0
+                    _hbo_post = _hbo_post - _hbo_bl_mean
+                    _hbr_post = _hbr_post - _hbr_bl_mean
+                _hbo_mean = _hbo_post.mean().item() * 1e6
+                _hbo_peak = _hbo_post.max().item() * 1e6
+                _hbr_mean = _hbr_post.mean().item() * 1e6
+                _hbr_peak = _hbr_post.max().item() * 1e6
 
         _fnirs_suffix = (
             f", {_fnirs_n} post-stimulus samples" if _fnirs_n > 0 else ""
         )
-        _lines.append(f"**fNIRS** (10 Hz{_fnirs_suffix})")
+        _lines.append(f"**fNIRS** (10 Hz{_fnirs_suffix}){_bl_label}")
         _lines.append("")
         _lines.append("| | Mean (uM) | Peak (uM) |")
         _lines.append("|---|---|---|")
@@ -2253,7 +2346,7 @@ def _(
         _fn = " (filtered)" if apr_filter_switch.value else ""
         _emg_suffix = f", {_emg_n:,} post-stimulus samples" if _emg_n > 0 else ""
         _lines.append(
-            f"**EMG{_fn}** ({_emg_suffix.strip(', ') if _emg_suffix else 'N/A'})"
+            f"**EMG{_fn}** ({_emg_suffix.strip(', ') if _emg_suffix else 'N/A'}){_bl_label}"
         )
         _lines.append("")
         _lines.append("| Sensor | Mean (mV) | Peak (mV) |")
@@ -2266,8 +2359,14 @@ def _(
                     _parts[1].replace(" (mV)", "") if len(_parts) > 1 else _col
                 )
                 _lbl = f"{_sensor_name} {_emg_ch}"
-                _vals = _apr_emg_post[_col].drop_nulls()
+                _vals = _apr_emg_post.get_column(_col).drop_nulls()
                 if len(_vals) > 0:
+                    if apr_baseline_switch.value:
+                        _bl_vals = (
+                            _apr_emg.filter(_cond_bl).get_column(_col).drop_nulls()
+                        )
+                        if len(_bl_vals) > 0:
+                            _vals = _vals - _bl_vals.mean()
                     _m = _vals.mean()
                     _p = _vals.max()
                     _lines.append(f"| {_lbl} | {_m:.4f} | {_p:.4f} |")
