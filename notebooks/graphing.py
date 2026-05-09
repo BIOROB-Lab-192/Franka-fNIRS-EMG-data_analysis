@@ -536,7 +536,14 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(fnirs_baseline_switch, fnirs_channel_options, fnirs_channel_selector, fnirs_df, mo, pl):
+def _(
+    fnirs_baseline_switch,
+    fnirs_channel_options,
+    fnirs_channel_selector,
+    fnirs_df,
+    mo,
+    pl,
+):
     # fNIRS Channel Plot Summary Stats
     # Matches: fNIRS Per-Channel Interactive Plot logic
 
@@ -2130,35 +2137,362 @@ def _(
 
 
 @app.cell
-def _(emg_df, pl):
-    emg_sampling_check = (
-        emg_df
-        .sort(["run_id", "task_instance", "time_sec"])
-        .with_columns(
-            pl.col("time_sec")
-            .diff()
-            .over(["run_id", "task_instance"])
-            .alias("dt")
-        )
-        .group_by(["run_id", "task_instance"])
-        .agg(
-            [
-                pl.len().alias("n_samples"),
-                pl.col("time_sec").min().alias("t_min"),
-                pl.col("time_sec").max().alias("t_max"),
-                pl.col("dt").drop_nulls().min().alias("dt_min"),
-                pl.col("dt").drop_nulls().median().alias("dt_median"),
-                pl.col("dt").drop_nulls().max().alias("dt_max"),
-                pl.col("dt").drop_nulls().mean().alias("dt_mean"),
-                pl.col("dt").drop_nulls().std().alias("dt_std"),
-                (1 / pl.col("dt").drop_nulls().median()).alias("fs_median"),
-                (pl.col("dt") <= 0).sum().alias("non_positive_dt_count"),
-            ]
-        )
-        .sort(["run_id", "task_instance"])
+def _(fnirs_df, mo):
+    # ─── Aggregated Per-Run Viewer ────────────────────────────────────────
+    # Per-Run Viewer Widgets
+    # Reuses: mo, fnirs_df, emg_df from existing cells
+
+    apr_task_sorted = sorted(
+        fnirs_df["task"].unique().to_list(), key=lambda _x: int(_x.split("_")[1])
     )
 
-    emg_sampling_check
+
+    apr_run_select = mo.ui.dropdown(
+        options=sorted(fnirs_df["run_id"].unique().to_list()), label="Run"
+    )
+
+    apr_baseline_switch = mo.ui.switch(label="Baseline correction (-5 to 0s)")
+    apr_filter_switch = mo.ui.switch(
+        label="Bandpass + RMS filter (20-450 Hz, 100 ms)"
+    )
+
+    mo.md("### Per-Run Viewer")
+    mo.vstack(
+        [
+            apr_run_select,
+            apr_baseline_switch,
+            apr_filter_switch,
+        ]
+    )
+    return apr_baseline_switch, apr_filter_switch, apr_run_select
+
+
+@app.cell(hide_code=True)
+def _(
+    apr_filter_switch,
+    apr_run_select,
+    emg_df,
+    fnirs_df,
+    mo,
+    pl,
+    prepare_emg_for_analysis,
+):
+    # --- Aggregated Per-Run Viewer -- Stats ---
+    # Reuses: fnirs_df, emg_df, apr_run_select, apr_baseline_switch, apr_filter_switch, prepare_emg_for_analysis
+
+    _lines = []
+
+    if apr_run_select.value is None:
+        _lines.append("*Select a run to see summary statistics across all tasks.*")
+    else:
+        _cond = pl.col("run_id") == apr_run_select.value
+        _cond_post = _cond & (pl.col("time_sec") >= 0)
+
+        _apr_fnirs = fnirs_df.filter(_cond)
+        _apr_emg_all = prepare_emg_for_analysis(
+            emg_df,
+            apply_filter=apr_filter_switch.value,
+            time_min=-5.0,
+            time_max=15.0,
+        )
+        _apr_emg = _apr_emg_all.filter(_cond)
+        _apr_emg_post = _apr_emg_all.filter(_cond_post)
+
+        _apr_n_tasks = _apr_fnirs["task"].n_unique()
+
+        _lines.append(
+            f"**{apr_run_select.value}** -- {_apr_n_tasks} tasks, mean across all tasks"
+        )
+        _lines.append("")
+
+        # fNIRS stats (mean across tasks, post-stimulus)
+        _apr_hbo_cols = [c for c in fnirs_df.columns if c.endswith("_hbo")]
+        _apr_hbr_cols = [c for c in fnirs_df.columns if c.endswith("_hbr")]
+        _apr_fnirs_post = fnirs_df.filter(_cond_post)
+
+        _fnirs_n = 0
+        _hbo_mean = _hbo_peak = _hbr_mean = _hbr_peak = 0.0
+        if _apr_fnirs_post.height > 0 and len(_apr_hbo_cols) > 0:
+            _hbo_vals = _apr_fnirs_post.select(
+                pl.mean_horizontal(_apr_hbo_cols)
+            ).drop_nulls()
+            _hbr_vals = _apr_fnirs_post.select(
+                pl.mean_horizontal(_apr_hbr_cols)
+            ).drop_nulls()
+            if len(_hbo_vals) > 0:
+                _hbo_mean = _hbo_vals.mean().item() * 1e6
+                _hbo_peak = _hbo_vals.max().item() * 1e6
+                _hbr_mean = _hbr_vals.mean().item() * 1e6
+                _hbr_peak = _hbr_vals.max().item() * 1e6
+                _fnirs_n = len(_hbo_vals)
+
+        _fnirs_suffix = (
+            f", {_fnirs_n} post-stimulus samples" if _fnirs_n > 0 else ""
+        )
+        _lines.append(f"**fNIRS** (10 Hz{_fnirs_suffix})")
+        _lines.append("")
+        _lines.append("| | Mean (uM) | Peak (uM) |")
+        _lines.append("|---|---|---|")
+        if _fnirs_n > 0:
+            _lines.append(f"| HbO | {_hbo_mean:.4f} | {_hbo_peak:.4f} |")
+            _lines.append(f"| HbR | {_hbr_mean:.4f} | {_hbr_peak:.4f} |")
+        else:
+            _lines.append("| HbO | -- | -- |")
+            _lines.append("| HbR | -- | -- |")
+
+        _lines.append("")
+
+        # EMG stats
+        _apr_emg_cols = [
+            c for c in _apr_emg_all.columns if "EMG" in c and c.endswith("(mV)")
+        ]
+        _emg_n = 0
+        if _apr_emg_post.height > 0 and len(_apr_emg_cols) > 0:
+            _emg_n = _apr_emg_post.height
+
+        _fn = " (filtered)" if apr_filter_switch.value else ""
+        _emg_suffix = f", {_emg_n:,} post-stimulus samples" if _emg_n > 0 else ""
+        _lines.append(
+            f"**EMG{_fn}** ({_emg_suffix.strip(', ') if _emg_suffix else 'N/A'})"
+        )
+        _lines.append("")
+        _lines.append("| Sensor | Mean (mV) | Peak (mV) |")
+        _lines.append("|--------|-----------|-----------|")
+        if _emg_n > 0:
+            for _col in _apr_emg_cols:
+                _parts = _col.split(" | ")
+                _sensor_name = _parts[0]
+                _emg_ch = (
+                    _parts[1].replace(" (mV)", "") if len(_parts) > 1 else _col
+                )
+                _lbl = f"{_sensor_name} {_emg_ch}"
+                _vals = _apr_emg_post[_col].drop_nulls()
+                if len(_vals) > 0:
+                    _m = _vals.mean()
+                    _p = _vals.max()
+                    _lines.append(f"| {_lbl} | {_m:.4f} | {_p:.4f} |")
+                else:
+                    _lines.append(f"| {_lbl} | -- | -- |")
+        else:
+            for _col in _apr_emg_cols:
+                _parts = _col.split(" | ")
+                _sensor_name = _parts[0]
+                _emg_ch = (
+                    _parts[1].replace(" (mV)", "") if len(_parts) > 1 else _col
+                )
+                _lbl = f"{_sensor_name} {_emg_ch}"
+                _lines.append(f"| {_lbl} | -- | -- |")
+
+    mo.md("\n".join(_lines))
+    return
+
+
+@app.cell(hide_code=True)
+def _(
+    apr_baseline_switch,
+    apr_filter_switch,
+    apr_run_select,
+    emg_df,
+    fnirs_df,
+    np,
+    pl,
+    plt,
+    prepare_emg_for_analysis,
+):
+    # --- Aggregated Per-Run Viewer -- Plot ---
+    # Reuses: fnirs_df, emg_df, pl, plt, np, apr_run_select, apr_baseline_switch, apr_filter_switch, prepare_emg_for_analysis
+
+    _apr_TIME_MIN = -5.0
+    _apr_TIME_MAX = 15.0
+
+    _apr_hbo_cols = [c for c in fnirs_df.columns if c.endswith("_hbo")]
+    _apr_hbr_cols = [c for c in fnirs_df.columns if c.endswith("_hbr")]
+
+    # Use filtered EMG if toggle is on
+    _apr_emg_for_plot = prepare_emg_for_analysis(
+        emg_df,
+        apply_filter=apr_filter_switch.value,
+        time_min=-5.0,
+        time_max=15.0,
+    )
+    _apr_emg_cols = [
+        c for c in _apr_emg_for_plot.columns if "EMG" in c and c.endswith("(mV)")
+    ]
+
+    # EMG labels
+    _apr_emg_labels = []
+    for _c in _apr_emg_cols:
+        _parts = _c.split(" | ")
+        _sensor_name = _parts[0]
+        _emg_ch = _parts[1].replace(" (mV)", "") if len(_parts) > 1 else _c
+        _apr_emg_labels.append(f"{_sensor_name} {_emg_ch}")
+
+    _ylabel_emg = "EMG RMS (mV)" if apr_filter_switch.value else "EMG (mV)"
+
+    if apr_run_select.value is None:
+        apr_fig, _ax = plt.subplots(figsize=(14, 3))
+        _ax.text(
+            0.5,
+            0.5,
+            "Select a run to view",
+            ha="center",
+            va="center",
+            fontsize=14,
+        )
+        _ax.set_axis_off()
+
+
+    else:
+        _cond_filter = (
+            (pl.col("run_id") == apr_run_select.value)
+            & (pl.col("time_sec") >= _apr_TIME_MIN)
+            & (pl.col("time_sec") <= _apr_TIME_MAX)
+        )
+
+        _run_fnirs = fnirs_df.filter(_cond_filter).sort("time_sec")
+        _run_emg = _apr_emg_for_plot.filter(_cond_filter).sort("time_sec")
+
+        if _run_fnirs.height == 0 and _run_emg.height == 0:
+            apr_fig, _ax = plt.subplots(figsize=(14, 3))
+            _ax.text(
+                0.5,
+                0.5,
+                "No data matches this selection",
+                ha="center",
+                va="center",
+                fontsize=14,
+            )
+            _ax.set_axis_off()
+
+        else:
+            # ============================================================
+            # fNIRS -- mean across tasks
+            # ============================================================
+            if (
+                len(_apr_hbo_cols) == 0
+                or len(_apr_hbr_cols) == 0
+                or _run_fnirs.height == 0
+            ):
+                _has_fnirs = False
+                _fnirs_time = np.array([])
+                _hbo = np.array([])
+                _hbr = np.array([])
+            else:
+                _has_fnirs = True
+
+                _fnirs_df_plot = (
+                    _run_fnirs.with_columns(
+                        [
+                            pl.mean_horizontal(_apr_hbo_cols).alias("HbO"),
+                            pl.mean_horizontal(_apr_hbr_cols).alias("HbR"),
+                        ]
+                    )
+                    .group_by("time_sec")
+                    .agg(
+                        [
+                            pl.col("HbO").mean().alias("HbO"),
+                            pl.col("HbR").mean().alias("HbR"),
+                        ]
+                    )
+                    .sort("time_sec")
+                )
+
+                _fnirs_time = _fnirs_df_plot["time_sec"].to_numpy()
+                _fnirs_bl = _fnirs_time < 0
+
+                _hbo = _fnirs_df_plot["HbO"].to_numpy() * 1e6
+                _hbr = _fnirs_df_plot["HbR"].to_numpy() * 1e6
+
+                if apr_baseline_switch.value:
+                    if np.any(_fnirs_bl):
+                        _hbo_bl = np.nanmean(_hbo[_fnirs_bl])
+                        _hbr_bl = np.nanmean(_hbr[_fnirs_bl])
+                        if not np.isnan(_hbo_bl):
+                            _hbo = _hbo - _hbo_bl
+                        if not np.isnan(_hbr_bl):
+                            _hbr = _hbr - _hbr_bl
+
+            # ============================================================
+            # EMG -- mean across tasks
+            # ============================================================
+            _emg_data = {}
+            for _col in _apr_emg_cols:
+                _emg_s = (
+                    _run_emg.select(["time_sec", _col])
+                    .group_by("time_sec")
+                    .agg(pl.col(_col).mean().alias(_col))
+                    .sort("time_sec")
+                )
+                _time = _emg_s["time_sec"].to_numpy()
+                _raw = _emg_s[_col].to_numpy().copy()
+                _emg_bl = _time < 0
+                if apr_baseline_switch.value:
+                    _valid = ~np.isnan(_raw)
+                    _bl_vals = _raw[_valid & _emg_bl]
+                    if len(_bl_vals) > 0:
+                        _raw[_valid] = _raw[_valid] - np.nanmean(_bl_vals)
+                _emg_data[_col] = {"time": _time, "data": _raw}
+
+            # ============================================================
+            # Figure
+            # ============================================================
+            _n_emg = len(_apr_emg_cols)
+            apr_fig, _axes = plt.subplots(
+                _n_emg + 1,
+                1,
+                figsize=(14, 2.5 * (_n_emg + 1)),
+                sharex=True,
+                gridspec_kw={"hspace": 0.15},
+            )
+            if _n_emg == 0:
+                _axes = [_axes]
+
+            # fNIRS plot
+            if _has_fnirs and len(_fnirs_time) > 0:
+                _axes[0].plot(
+                    _fnirs_time, _hbo, label="HbO", color="red", linewidth=1.2
+                )
+                _axes[0].plot(
+                    _fnirs_time, _hbr, label="HbR", color="blue", linewidth=1.2
+                )
+                _axes[0].set_ylabel("Concentration (uM)")
+                _axes[0].legend(loc="upper right", fontsize=8)
+            else:
+                _axes[0].text(
+                    0.5,
+                    0.5,
+                    "No fNIRS data",
+                    ha="center",
+                    va="center",
+                    transform=_axes[0].transAxes,
+                )
+                _axes[0].set_ylabel("fNIRS")
+
+            _axes[0].axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+            _axes[0].set_title(
+                f"fNIRS -- {apr_run_select.value} -- mean across all tasks"
+            )
+
+            # EMG plots
+            for _i, (_col, _label) in enumerate(
+                zip(_apr_emg_cols, _apr_emg_labels)
+            ):
+                _axes[_i + 1].plot(
+                    _emg_data[_col]["time"],
+                    _emg_data[_col]["data"],
+                    color=f"C{_i}",
+                    linewidth=0.5,
+                )
+                _axes[_i + 1].set_ylabel(f"{_label}\n(mV)", fontsize=8)
+                _axes[_i + 1].axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+
+            _axes[-1].set_xlabel("Time (s)")
+            for _ax in _axes:
+                _ax.set_xlim(_apr_TIME_MIN, _apr_TIME_MAX)
+
+            plt.tight_layout()
+
+    apr_fig
     return
 
 
